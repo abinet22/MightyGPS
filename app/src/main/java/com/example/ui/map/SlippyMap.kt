@@ -4,6 +4,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.CircleShape
@@ -52,21 +54,45 @@ data class MapMarker(
     val course: Float = 0f,
     val status: String = "online",
     val speedKmh: Double = 0.0,
-    val category: String? = "car"
+    val category: String? = "car",
+    val altitude: Double = 0.0,
+    val lastUpdate: String? = null,
+    val address: String? = null,
+    val accuracy: Double = 0.0
 )
+
+private fun formatLastUpdate(rawTime: String?): String {
+    if (rawTime.isNullOrBlank()) return "Just now"
+    return try {
+        val isoFormat = if (rawTime.contains(".")) {
+            java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply {
+                timeZone = java.util.TimeZone.getTimeZone("UTC")
+            }
+        } else {
+            java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).apply {
+                timeZone = java.util.TimeZone.getTimeZone("UTC")
+            }
+        }
+        val date = isoFormat.parse(rawTime) ?: return rawTime
+        val outputFormat = java.text.SimpleDateFormat("dd MMM, HH:mm:ss", java.util.Locale.US)
+        outputFormat.format(date)
+    } catch (e: Exception) {
+        rawTime.replace("T", " ").replace("Z", "")
+    }
+}
 
 @Composable
 fun SlippyMap(
     modifier: Modifier = Modifier,
     initialCenterLat: Double = 9.0192, // Default to Addis Ababa (Mighty GPS headquarters territory)
     initialCenterLng: Double = 38.7525,
-    initialZoom: Float = 12f,
+    initialZoom: Float = 15f,
     markers: List<MapMarker> = emptyList(),
     routePath: List<Position> = emptyList(),
     selectedMarkerId: Long? = null,
     onMarkerClick: (Long) -> Unit = {},
     isDarkMode: Boolean = true,
-    mapStyle: String = "mapbox_dark", // "google_road", "google_satellite", "mapbox_dark", "mapbox_light", "osm_classic"
+    mapStyle: String = "mapbox_streets", // Mapbox & Google styles
     markerLabelType: String = "name", // "name", "coordinates", "plate"
     markerIconStyle: String = "car",
     customIconUri: String? = null,
@@ -116,6 +142,11 @@ fun SlippyMap(
     var centerLng by remember { mutableStateOf(initialCenterLng) }
     var zoom by remember { mutableStateOf(initialZoom) }
 
+    val currentMarkers by rememberUpdatedState(markers)
+    val currentDrawMode by rememberUpdatedState(drawMode)
+    val currentDrawnPoints by rememberUpdatedState(drawnPoints)
+    val currentDrawnCircleCenter by rememberUpdatedState(drawnCircleCenter)
+
     // Report any viewport changes back to the parent to keep the map state synchronized during pan, zoom or fly-to.
     LaunchedEffect(centerLat, centerLng, zoom) {
         onViewportChanged(centerLat, centerLng, zoom)
@@ -132,7 +163,7 @@ fun SlippyMap(
                 
                 val destLat = m.latitude
                 val destLng = m.longitude
-                val destZoom = 18.0f // Zoom to level 18 as requested by user
+                val destZoom = 19.5f // Increased zoom level for closer detail
                 
                 val steps = 30
                 for (i in 1..steps) {
@@ -141,7 +172,7 @@ fun SlippyMap(
                     val t = 1f - (1f - progress) * (1f - progress)
                     centerLat = startLat + (destLat - startLat) * t
                     centerLng = startLng + (destLng - startLng) * t
-                    zoom = (startZoom + (destZoom - startZoom) * t).coerceIn(2.5f, 18.5f)
+                    zoom = (startZoom + (destZoom - startZoom) * t).coerceIn(2.5f, 21.0f)
                     kotlinx.coroutines.delay(16) // ~60 FPS
                 }
             }
@@ -150,27 +181,42 @@ fun SlippyMap(
 
     // Dynamic scale helper
     val tileSize = 256
-    val currentZoomInt = zoom.roundToInt().coerceIn(2, 19)
 
     // Select tile URL based on chosen map style
     val tileUrlTemplate = when (mapStyle) {
+        // Google Maps Styles
         "google_road" -> "https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}"
-        "google_satellite" -> "https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
+        "google_satellite" -> "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}"
+        "google_hybrid" -> "https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
+        "google_terrain" -> "https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}"
+        
+        // Mapbox Styles
+        "mapbox_streets" -> "https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/256/{z}/{x}/{y}?access_token=pk.eyJ1IjoiYWJpbmV0MTIzIiwiYSI6ImNrbWR3d3Y5NzJwbG8ycGp4bGU1bXBtaGsifQ.LIZpH0mev90pUGXewX6lww"
+        "mapbox_outdoors" -> "https://api.mapbox.com/styles/v1/mapbox/outdoors-v12/tiles/256/{z}/{x}/{y}?access_token=pk.eyJ1IjoiYWJpbmV0MTIzIiwiYSI6ImNrbWR3d3Y5NzJwbG8ycGp4bGU1bXBtaGsifQ.LIZpH0mev90pUGXewX6lww"
         "mapbox_light" -> "https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/256/{z}/{x}/{y}?access_token=pk.eyJ1IjoiYWJpbmV0MTIzIiwiYSI6ImNrbWR3d3Y5NzJwbG8ycGp4bGU1bXBtaGsifQ.LIZpH0mev90pUGXewX6lww"
+        "mapbox_dark" -> "https://api.mapbox.com/styles/v1/mapbox/dark-v11/tiles/256/{z}/{x}/{y}?access_token=pk.eyJ1IjoiYWJpbmV0MTIzIiwiYSI6ImNrbWR3d3Y5NzJwbG8ycGp4bGU1bXBtaGsifQ.LIZpH0mev90pUGXewX6lww"
+        "mapbox_satellite" -> "https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/256/{z}/{x}/{y}?access_token=pk.eyJ1IjoiYWJpbmV0MTIzIiwiYSI6ImNrbWR3d3Y5NzJwbG8ycGp4bGU1bXBtaGsifQ.LIZpH0mev90pUGXewX6lww"
+        "mapbox_satellite_streets" -> "https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12/tiles/256/{z}/{x}/{y}?access_token=pk.eyJ1IjoiYWJpbmV0MTIzIiwiYSI6ImNrbWR3d3Y5NzJwbG8ycGp4bGU1bXBtaGsifQ.LIZpH0mev90pUGXewX6lww"
+        
         "osm_classic" -> "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        else -> "https://api.mapbox.com/styles/v1/mapbox/dark-v11/tiles/256/{z}/{x}/{y}?access_token=pk.eyJ1IjoiYWJpbmV0MTIzIiwiYSI6ImNrbWR3d3Y5NzJwbG8ycGp4bGU1bXBtaGsifQ.LIZpH0mev90pUGXewX6lww" // default mapbox_dark
+        else -> "https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/256/{z}/{x}/{y}?access_token=pk.eyJ1IjoiYWJpbmV0MTIzIiwiYSI6ImNrbWR3d3Y5NzJwbG8ycGp4bGU1bXBtaGsifQ.LIZpH0mev90pUGXewX6lww" // default mapbox_streets fallback
     }
 
     // Convert coordinates to tile pixel positions
     fun getPixelCoords(lat: Double, lng: Double, z: Int): Pair<Double, Double> {
         val totalTiles = (1 shl z).toDouble()
         val totalPixels = totalTiles * tileSize
-        
         val x = (lng + 180.0) / 360.0 * totalPixels
-        
         val latRad = Math.toRadians(lat)
         val y = (1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * totalPixels
-        
+        return Pair(x, y)
+    }
+
+    fun getPixelCoordsCont(lat: Double, lng: Double, z: Double): Pair<Double, Double> {
+        val totalPixels = 2.0.pow(z) * tileSize
+        val x = (lng + 180.0) / 360.0 * totalPixels
+        val latRad = Math.toRadians(lat)
+        val y = (1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * totalPixels
         return Pair(x, y)
     }
 
@@ -178,13 +224,19 @@ fun SlippyMap(
     fun getCoordsFromPixels(px: Double, py: Double, z: Int): Pair<Double, Double> {
         val totalTiles = (1 shl z).toDouble()
         val totalPixels = totalTiles * tileSize
-        
         val lng = px / totalPixels * 360.0 - 180.0
-        
         val valY = (py / totalPixels) * 2.0 - 1.0
         val latRad = atan(sinh(PI * (1.0 - valY)))
         val lat = Math.toDegrees(latRad)
-        
+        return Pair(lat, lng)
+    }
+
+    fun getCoordsFromPixelsCont(px: Double, py: Double, z: Double): Pair<Double, Double> {
+        val totalPixels = 2.0.pow(z) * tileSize
+        val lng = px / totalPixels * 360.0 - 180.0
+        val valY = (py / totalPixels) * 2.0 - 1.0
+        val latRad = atan(sinh(PI * (1.0 - valY)))
+        val lat = Math.toDegrees(latRad)
         return Pair(lat, lng)
     }
 
@@ -192,26 +244,6 @@ fun SlippyMap(
         modifier = modifier
             .background(if (isDarkMode) Color(0xFF1E1E24) else Color(0xFFF0F2F5))
             .clipToBounds()
-            .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoomFactor, _ ->
-                    // Zoom adjustment
-                    val rawZoom = zoom * zoomFactor
-                    zoom = rawZoom.coerceIn(2.5f, 18.5f)
-
-                    // Convert current geo center to global coordinates
-                    val centerZ = zoom.roundToInt()
-                    val (cx, cy) = getPixelCoords(centerLat, centerLng, centerZ)
-                    
-                    // Adjust global coordinate by the physical map pan offsets
-                    val nx = cx - pan.x
-                    val ny = cy - pan.y
-
-                    // Re-calculate geo coordinate for the new center
-                    val (newLat, newLng) = getCoordsFromPixels(nx, ny, centerZ)
-                    centerLat = newLat.coerceIn(-85.05, 85.05)
-                    centerLng = newLng.coerceIn(-180.0, 180.0)
-                }
-            }
     ) {
         val width = constraints.maxWidth
         val height = constraints.maxHeight
@@ -223,72 +255,164 @@ fun SlippyMap(
             return@BoxWithConstraints
         }
 
+        val currentZoomInt = floor(zoom.toDouble()).toInt().coerceIn(2, 20)
+        val subScale = 2.0.pow(zoom.toDouble() - currentZoomInt).toFloat()
+        val density = LocalDensity.current
+
         // Center globals
         val (centerXPixel, centerYPixel) = getPixelCoords(centerLat, centerLng, currentZoomInt)
 
         // Find visible tile index span
-        val startTileX = floor((centerXPixel - width / 2) / tileSize).toInt()
-        val endTileX = ceil((centerXPixel + width / 2) / tileSize).toInt()
-        val startTileY = floor((centerYPixel - height / 2) / tileSize).toInt()
-        val endTileY = ceil((centerYPixel + height / 2) / tileSize).toInt()
+        val widthUnscaled = width / subScale
+        val heightUnscaled = height / subScale
+        val startTileX = floor((centerXPixel - widthUnscaled / 2) / tileSize).toInt()
+        val endTileX = ceil((centerXPixel + widthUnscaled / 2) / tileSize).toInt()
+        val startTileY = floor((centerYPixel - heightUnscaled / 2) / tileSize).toInt()
+        val endTileY = ceil((centerYPixel + heightUnscaled / 2) / tileSize).toInt()
 
         val maxTileIndex = (1 shl currentZoomInt) - 1
 
-        // Inner gesture container to isolate tap events
+        // Inner gesture container to isolate tap and transform events
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(markers, zoom, centerLat, centerLng, width, height, drawMode, drawnPoints, drawnCircleCenter) {
-                    detectTapGestures { tapOffset ->
-                        val tapX = tapOffset.x
-                        val tapY = tapOffset.y
-
-                        if (drawMode != "none") {
-                            // Translate tap position to coordinates
-                            val globalPx = centerXPixel - width / 2 + tapX
-                            val globalPy = centerYPixel - height / 2 + tapY
-                            val (tapLat, tapLng) = getCoordsFromPixels(globalPx, globalPy, currentZoomInt)
-
-                            if (drawMode == "polygon") {
-                                onDrawPointsChanged(drawnPoints + Pair(tapLat, tapLng))
-                            } else if (drawMode == "circle") {
-                                if (drawnCircleCenter == null) {
-                                    onDrawCircleChanged(Pair(tapLat, tapLng), 1000.0)
-                                } else {
-                                    // Calculate distance from center to tap offset
-                                    val dLat = Math.toRadians(tapLat - drawnCircleCenter.first)
-                                    val dLon = Math.toRadians(tapLng - drawnCircleCenter.second)
-                                    val a = sin(dLat / 2) * sin(dLat / 2) +
-                                            cos(Math.toRadians(drawnCircleCenter.first)) * cos(Math.toRadians(tapLat)) *
-                                            sin(dLon / 2) * sin(dLon / 2)
-                                    val c = 2 * atan2(sqrt(a), sqrt(1 - a))
-                                    val radius = 6371000.0 * c
-                                    onDrawCircleChanged(drawnCircleCenter, radius.coerceIn(50.0, 50000.0))
-                                }
-                            }
-                        } else {
-                            var clickedId: Long? = null
-                            var minDistance = 120f // Tap tolerance in pixels
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val firstDown = awaitFirstDown(requireUnconsumed = false)
+                        
+                        // For panning
+                        var lastPanPosition: Offset? = firstDown.position
+                        var isDragging = false
+                        var totalDragDistance = 0f
+                        
+                        // For zooming
+                        var initialFingerDistance: Float? = null
+                        var initialZoomOnPinch: Float? = null
+                        
+                        // To identify if any multi-touch occurred in this gesture sequence
+                        var multiTouchOccurred = false
+                        
+                        do {
+                            val event = awaitPointerEvent()
+                            val activePointers = event.changes.filter { it.pressed }
                             
-                            markers.forEach { m ->
-                                val (px, py) = getPixelCoords(m.latitude, m.longitude, currentZoomInt)
-                                val dx = px - centerXPixel
-                                val dy = py - centerYPixel
-                                val screenX = (width / 2 + dx).toFloat()
-                                val screenY = (height / 2 + dy).toFloat()
+                            if (activePointers.size >= 2) {
+                                multiTouchOccurred = true
+                                isDragging = false // Cancel panning if multi-touch starts
+                                val p1 = activePointers[0].position
+                                val p2 = activePointers[1].position
+                                val currentDistance = (p1 - p2).getDistance()
                                 
-                                val dist = sqrt((screenX - tapX).pow(2) + (screenY - tapY).pow(2))
-                                if (dist < minDistance) {
-                                    minDistance = dist
-                                    clickedId = m.id
+                                if (initialFingerDistance == null) {
+                                    initialFingerDistance = currentDistance
+                                    initialZoomOnPinch = zoom
+                                } else {
+                                    val distanceRatio = currentDistance / (initialFingerDistance.coerceAtLeast(1f))
+                                    if (distanceRatio > 0) {
+                                        val log2Ratio = ln(distanceRatio) / ln(2.0f)
+                                        val targetZoom = (initialZoomOnPinch!! + log2Ratio).coerceIn(2.5f, 21.0f)
+                                        zoom = targetZoom
+                                    }
                                 }
+                                
+                                // Consume the changes for zoom
+                                event.changes.forEach { it.consume() }
+                                lastPanPosition = null
+                            } else if (activePointers.size == 1 && !multiTouchOccurred) {
+                                // Single finger panning
+                                initialFingerDistance = null
+                                initialZoomOnPinch = null
+                                
+                                val pointer = activePointers[0]
+                                val currentPosition = pointer.position
+                                
+                                if (lastPanPosition != null) {
+                                    val panOffset = currentPosition - lastPanPosition!!
+                                    val dist = panOffset.getDistance()
+                                    totalDragDistance += dist
+                                    
+                                    if (isDragging) {
+                                        // Update camera center based on panOffset
+                                        val (cx, cy) = getPixelCoordsCont(centerLat, centerLng, zoom.toDouble())
+                                        val nx = cx - panOffset.x
+                                        val ny = cy - panOffset.y
+                                        
+                                        val (newLat, newLng) = getCoordsFromPixelsCont(nx, ny, zoom.toDouble())
+                                        centerLat = newLat.coerceIn(-85.05, 85.05)
+                                        centerLng = newLng.coerceIn(-180.0, 180.0)
+                                        
+                                        pointer.consume()
+                                    } else {
+                                        val touchSlop = 8f
+                                        if (totalDragDistance > touchSlop) {
+                                            isDragging = true
+                                        }
+                                    }
+                                }
+                                lastPanPosition = currentPosition
+                            } else {
+                                initialFingerDistance = null
+                                initialZoomOnPinch = null
+                                lastPanPosition = null
                             }
                             
-                            if (clickedId != null) {
-                                onMarkerClick(clickedId!!)
+                        } while (event.changes.any { it.pressed })
+                        
+                        // After the gesture sequence completely finishes (all fingers lifted)
+                        if (!multiTouchOccurred && !isDragging && totalDragDistance < 15f) {
+                            val tapOffset = firstDown.position
+                            val tapX = tapOffset.x
+                            val tapY = tapOffset.y
+
+                            if (currentDrawMode != "none") {
+                                // Translate tap position to coordinates
+                                val unscaledTapX = (tapX - width / 2) / subScale
+                                val unscaledTapY = (tapY - height / 2) / subScale
+                                val globalPx = centerXPixel + unscaledTapX
+                                val globalPy = centerYPixel + unscaledTapY
+                                val (tapLat, tapLng) = getCoordsFromPixels(globalPx, globalPy, currentZoomInt)
+
+                                if (currentDrawMode == "polygon") {
+                                    onDrawPointsChanged(currentDrawnPoints + Pair(tapLat, tapLng))
+                                } else if (currentDrawMode == "circle") {
+                                    if (currentDrawnCircleCenter == null) {
+                                        onDrawCircleChanged(Pair(tapLat, tapLng), 1000.0)
+                                    } else {
+                                        // Calculate distance from center to tap offset
+                                        val dLat = Math.toRadians(tapLat - currentDrawnCircleCenter!!.first)
+                                        val dLon = Math.toRadians(tapLng - currentDrawnCircleCenter!!.second)
+                                        val a = sin(dLat / 2) * sin(dLat / 2) +
+                                                cos(Math.toRadians(currentDrawnCircleCenter!!.first)) * cos(Math.toRadians(tapLat)) *
+                                                sin(dLon / 2) * sin(dLon / 2)
+                                        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+                                        val radius = 6371000.0 * c
+                                        onDrawCircleChanged(currentDrawnCircleCenter!!, radius.coerceIn(50.0, 50000.0))
+                                    }
+                                }
                             } else {
-                                // Tap on map background deselects / closes popup
-                                onMarkerClick(-1L)
+                                var clickedId: Long? = null
+                                var minDistance = 120f // Tap tolerance in pixels
+                                
+                                currentMarkers.forEach { m ->
+                                    val (px, py) = getPixelCoords(m.latitude, m.longitude, currentZoomInt)
+                                    val dx = (px - centerXPixel) * subScale
+                                    val dy = (py - centerYPixel) * subScale
+                                    val screenX = (width / 2 + dx).toFloat()
+                                    val screenY = (height / 2 + dy).toFloat()
+                                    
+                                    val dist = sqrt((screenX - tapX).pow(2) + (screenY - tapY).pow(2))
+                                    if (dist < minDistance) {
+                                        minDistance = dist
+                                        clickedId = m.id
+                                    }
+                                }
+                                
+                                if (clickedId != null) {
+                                    onMarkerClick(clickedId!!)
+                                } else {
+                                    // Tap on map background deselects / closes popup
+                                    onMarkerClick(-1L)
+                                }
                             }
                         }
                     }
@@ -320,15 +444,21 @@ fun SlippyMap(
                     val currentTileLeftPx = tx * tileSize
                     val currentTileTopPx = ty * tileSize
                     
-                    val screenX = (currentTileLeftPx - centerXPixel + width / 2).toFloat()
-                    val screenY = (currentTileTopPx - centerYPixel + height / 2).toFloat()
+                    val dx = currentTileLeftPx - centerXPixel
+                    val dy = currentTileTopPx - centerYPixel
+                    val screenX = (width / 2 + dx * subScale).toFloat()
+                    val screenY = (height / 2 + dy * subScale).toFloat()
+                    val tileSizeScaled = tileSize * subScale
 
                     androidx.compose.foundation.Image(
                         painter = painter,
                         contentDescription = null,
                         modifier = Modifier
-                            .offset(x = (screenX / 2.75f).dp, y = (screenY / 2.75f).dp)
-                            .size(93.dp)
+                            .offset(
+                                x = with(density) { screenX.toDp() },
+                                y = with(density) { screenY.toDp() }
+                            )
+                            .size(with(density) { tileSizeScaled.toDp() })
                     )
                 }
             }
@@ -341,8 +471,8 @@ fun SlippyMap(
                 // Helper to get raw offset coordinates on map surface
                 fun geoToScreen(lat: Double, lng: Double): Offset {
                     val (px, py) = getPixelCoords(lat, lng, currentZoomInt)
-                    val dx = px - centerXPixel
-                    val dy = py - centerYPixel
+                    val dx = (px - centerXPixel) * subScale
+                    val dy = (py - centerYPixel) * subScale
                     return Offset((width / 2 + dx).toFloat(), (height / 2 + dy).toFloat())
                 }
 
@@ -639,15 +769,15 @@ fun SlippyMap(
             if (selectedMarker != null) {
                 val density = LocalDensity.current
                 val (px, py) = getPixelCoords(selectedMarker.latitude, selectedMarker.longitude, currentZoomInt)
-                val dx = px - centerXPixel
-                val dy = py - centerYPixel
+                val dx = (px - centerXPixel) * subScale
+                val dy = (py - centerYPixel) * subScale
                 
                 val screenX = (width / 2 + dx).toFloat()
                 val screenY = (height / 2 + dy).toFloat()
                 
                 if (screenX >= 0 && screenX <= width && screenY >= 0 && screenY <= height) {
-                    val cardWidthDp = 240.dp
-                    val cardHeightDp = 150.dp
+                    val cardWidthDp = 280.dp
+                    val cardHeightDp = 220.dp
                     
                     val cardWidthPx = with(density) { cardWidthDp.toPx() }
                     val cardHeightPx = with(density) { cardHeightDp.toPx() }
@@ -687,8 +817,10 @@ fun SlippyMap(
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(12.dp)
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.SpaceBetween
                             ) {
+                                // 1. Header (Name + Status + Dismiss Icon)
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -714,8 +846,26 @@ fun SlippyMap(
                                             color = Color.White,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 13.sp,
-                                            maxLines = 1
+                                            maxLines = 1,
+                                            modifier = Modifier.widthIn(max = 140.dp)
                                         )
+                                        
+                                        // Status Pill Badge
+                                        Box(
+                                            modifier = Modifier
+                                                .background(
+                                                    color = if (selectedMarker.status == "online") Color(0x3310B981) else Color(0x336B7280),
+                                                    shape = RoundedCornerShape(4.dp)
+                                                )
+                                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = selectedMarker.status.uppercase(),
+                                                color = if (selectedMarker.status == "online") Color(0xFF10B981) else Color(0xFF9CA3AF),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 8.sp
+                                            )
+                                        }
                                     }
                                     
                                     Box(
@@ -733,89 +883,164 @@ fun SlippyMap(
                                     }
                                 }
                                 
-                                Spacer(modifier = Modifier.height(4.dp))
+                                Spacer(modifier = Modifier.height(2.dp))
                                 HorizontalDivider(color = Color(0xFF1E293B), thickness = 1.dp)
-                                Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(6.dp))
                                 
-                                val plateNumber = "ET 3-" + (10000 + selectedMarker.id % 90000) + " AA"
-                                val lastUpdateStr = if (selectedMarker.status == "online") "Just now" else "12 mins ago"
-                                
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(bottom = 3.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(text = "Plate number", color = Color.Gray, fontSize = 10.sp)
-                                    Text(
-                                        text = plateNumber,
-                                        color = Color(0xFFF59E0B),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                                
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(bottom = 3.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(text = "Speed", color = Color.Gray, fontSize = 10.sp)
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Text(
-                                            text = String.format("%.1f km/h", selectedMarker.speedKmh),
-                                            color = if (selectedMarker.speedKmh > 0) Color(0xFF10B981) else Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 10.sp
-                                        )
-                                        Icon(
-                                            imageVector = Icons.Default.PlayArrow,
-                                            contentDescription = "Direction",
-                                            tint = Color.LightGray,
-                                            modifier = Modifier
-                                                .size(10.dp)
-                                                .graphicsLayer(rotationZ = selectedMarker.course)
-                                        )
-                                    }
-                                }
-                                
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(bottom = 3.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(text = "Last update", color = Color.Gray, fontSize = 10.sp)
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(5.dp)
-                                                .background(
-                                                    color = if (selectedMarker.status == "online") Color(0xFF10B981) else Color(0xFF6B7280),
-                                                    shape = CircleShape
-                                                )
-                                        )
-                                        Text(
-                                            text = lastUpdateStr,
-                                            color = Color.LightGray,
-                                            fontSize = 10.sp
-                                        )
-                                    }
-                                }
-                                
+                                // 2. Telemetry Row 1: Speed and Altitude Block
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Text(text = "Coordinates", color = Color.Gray, fontSize = 10.sp)
+                                    // Speed Tile
+                                    Card(
+                                        modifier = Modifier.weight(1f),
+                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B).copy(alpha = 0.5f)),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(6.dp),
+                                            horizontalAlignment = Alignment.Start
+                                        ) {
+                                            Text("⚡ SPEED", color = Color.Gray, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                            ) {
+                                                Text(
+                                                    text = String.format("%.1f km/h", selectedMarker.speedKmh),
+                                                    color = if (selectedMarker.speedKmh > 0) Color(0xFF10B981) else Color.White,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 11.sp
+                                                )
+                                                if (selectedMarker.speedKmh > 0) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.PlayArrow,
+                                                        contentDescription = "Direction",
+                                                        tint = Color(0xFF10B981),
+                                                        modifier = Modifier
+                                                            .size(10.dp)
+                                                            .graphicsLayer(rotationZ = selectedMarker.course)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Altitude Tile
+                                    Card(
+                                        modifier = Modifier.weight(1f),
+                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B).copy(alpha = 0.5f)),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(6.dp),
+                                            horizontalAlignment = Alignment.Start
+                                        ) {
+                                            Text("🏔️ ALTITUDE", color = Color.Gray, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = String.format("%.0f m", selectedMarker.altitude),
+                                                color = Color(0xFF38BDF8),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+                                }
+                                
+                                Spacer(modifier = Modifier.height(4.dp))
+                                
+                                // Telemetry Row 2: Accuracy & Plate/Course details
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    // Accuracy Tile
+                                    Card(
+                                        modifier = Modifier.weight(1f),
+                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B).copy(alpha = 0.3f)),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(6.dp),
+                                            horizontalAlignment = Alignment.Start
+                                        ) {
+                                            Text("🎯 ACCURACY", color = Color.Gray, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = if (selectedMarker.accuracy > 0) String.format("±%.1f m", selectedMarker.accuracy) else "High Precision",
+                                                color = Color.White,
+                                                fontSize = 10.sp
+                                            )
+                                        }
+                                    }
+                                    
+                                    // Plate Tile
+                                    Card(
+                                        modifier = Modifier.weight(1f),
+                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B).copy(alpha = 0.3f)),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(6.dp),
+                                            horizontalAlignment = Alignment.Start
+                                        ) {
+                                            Text("🏷️ PLATE ID", color = Color.Gray, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            val plateNumber = "ET 3-" + (10000 + selectedMarker.id % 90000) + " AA"
+                                            Text(
+                                                text = plateNumber,
+                                                color = Color(0xFFF59E0B),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 10.sp
+                                            )
+                                        }
+                                    }
+                                }
+                                
+                                Spacer(modifier = Modifier.height(6.dp))
+                                
+                                // Coordinates & Last reported time
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    // Coordinates
+                                    val locationValue = if (!selectedMarker.address.isNullOrBlank()) {
+                                        "📍 ${selectedMarker.address}"
+                                    } else {
+                                        String.format("📍 %.5f, %.5f", selectedMarker.latitude, selectedMarker.longitude)
+                                    }
                                     Text(
-                                        text = String.format("%.5f, %.5f", selectedMarker.latitude, selectedMarker.longitude),
+                                        text = locationValue,
                                         color = Color(0xFF3B82F6),
                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                        fontSize = 10.sp
+                                        fontSize = 9.sp,
+                                        maxLines = 1
                                     )
+                                    
+                                    // Last Update
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(text = "Last active:", color = Color.Gray, fontSize = 9.sp)
+                                            val friendlyTime = formatLastUpdate(selectedMarker.lastUpdate)
+                                            Text(
+                                                text = friendlyTime,
+                                                color = Color.LightGray,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

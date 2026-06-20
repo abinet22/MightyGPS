@@ -134,13 +134,7 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
         val points: List<Pair<Double, Double>> = emptyList()
     )
 
-    private val _geofences = MutableStateFlow<List<CustomGeofence>>(
-        listOf(
-            CustomGeofence("gf_1", "Addis Ababa Fleet Hub", 9.0192, 38.7525, 2500.0, true, "CIRCLE (9.0192 38.7525, 2500.0)", "circle"),
-            CustomGeofence("gf_2", "Bole Logistics Center", 8.9773, 38.7968, 1200.0, true, "CIRCLE (8.9773 38.7968, 1200.0)", "circle"),
-            CustomGeofence("gf_3", "Arada Custom Station", 9.0350, 38.7620, 800.0, true, "CIRCLE (9.0350 38.7620, 800.0)", "circle")
-        )
-    )
+    private val _geofences = MutableStateFlow<List<CustomGeofence>>(emptyList())
     val geofences: StateFlow<List<CustomGeofence>> = _geofences.asStateFlow()
 
     // Data holder for sent telematics commands
@@ -153,12 +147,7 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
         val status: String
     )
 
-    private val _commandsLog = MutableStateFlow<List<DispatchedCommand>>(
-        listOf(
-            DispatchedCommand("cmd_1", "Heavy Fleet Truck A", "Engine Cut-Off", "RELAY_1=OFF", "10:15:30 AM", "EXECUTED"),
-            DispatchedCommand("cmd_2", "Express Van B", "Ping Device", "MODE=SILENT", "11:04:12 AM", "ACKNOWLEDGED")
-        )
-    )
+    private val _commandsLog = MutableStateFlow<List<DispatchedCommand>>(emptyList())
     val commandsLog: StateFlow<List<DispatchedCommand>> = _commandsLog.asStateFlow()
 
     // Customization Setters
@@ -381,6 +370,42 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 "command_payload" to "የቁጥጥር ትዕዛዝ ባንኮች",
                 "tenant_mode" to "ፕሪሚየም ኢንተርፕራይዝ የደንበኛ መግቢያ (Mighty GPS)",
                 "assigned_vehicles" to "ለእርስዎ የተመደቡ መሣሪያዎች"
+            )
+            "om" -> mapOf(
+                "active_fleet" to "Konkolaaddota Hojii",
+                "map_style" to "Haala Kaartaa",
+                "language" to "Afaan Filadhu",
+                "marker_label" to "Mallattoo Kaartaa",
+                "marker_icon" to "Gosa Mallattoo",
+                "send_command" to "Ergaa Ergi",
+                "geofence" to "Daangaa Geofence",
+                "settings" to "Mijeeffama",
+                "playback" to "Taphachiisa Seenaa",
+                "devices" to "Meeshaalee Active",
+                "alerts" to "Akeekkachiisa",
+                "saas_console" to "Gabaasa Admin",
+                "create_geofence" to "Daangaa Haaraa Uumi",
+                "command" to "Gosa Ajajaa GPS",
+                "commands" to "Ajajawwan Ergaman",
+                "plate_number" to "Lakk. Gabatee",
+                "device_name" to "Maqaa Meeshaa",
+                "coordinates" to "Qindoomina Kaartaa",
+                "select_device" to "Konkolaata Filadhu",
+                "speed" to "Saffisa",
+                "status" to "Haala",
+                "customization_panel" to "Filannoo Sirreessaa",
+                "engine_status" to "Haala Mootoraa",
+                "engine_kill" to "Mootora Dhaabsii",
+                "unblock_engine" to "Mootora Jalqabsiisi",
+                "ping_asset" to "Haala Meeshaa Gaafadhu",
+                "reboot_gps" to "GPS Irra Deebi'i Kaasi",
+                "geofence_name" to "Maqaa Daangaa",
+                "radius" to "Safartuu Marsaa (m)",
+                "save_geofence" to "Daangaa Sarari",
+                "no_geofences" to "Daangaan uumame hin jiru.",
+                "command_payload" to "Ergaa Ajajaa",
+                "tenant_mode" to "Mighty GPS SaaS Qarshii",
+                "assigned_vehicles" to "Konkolaattota Sitti Ramadaman"
             )
             "es" -> mapOf(
                 "active_fleet" to "Flota Activa",
@@ -764,7 +789,11 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 course = pos?.course?.toFloat() ?: 0f,
                 status = device.status,
                 speedKmh = pos?.speedKmh ?: 0.0,
-                category = device.category
+                category = device.category,
+                altitude = pos?.altitude ?: 0.0,
+                lastUpdate = pos?.deviceTime ?: device.lastUpdate,
+                address = pos?.address,
+                accuracy = pos?.accuracy ?: 0.0
             )
         }.filter { it.latitude != 0.0 && it.longitude != 0.0 }
     }

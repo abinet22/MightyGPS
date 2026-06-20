@@ -57,7 +57,7 @@ class SessionManager(context: Context) {
         set(value) = prefs.edit().putString(KEY_LANGUAGE, value).apply()
 
     var mapProviderStyle: String
-        get() = prefs.getString(KEY_MAP_PROVIDER_STYLE, "mapbox_dark") ?: "mapbox_dark"
+        get() = prefs.getString(KEY_MAP_PROVIDER_STYLE, "mapbox_streets") ?: "mapbox_streets"
         set(value) = prefs.edit().putString(KEY_MAP_PROVIDER_STYLE, value).apply()
 
     var markerLabelStyle: String

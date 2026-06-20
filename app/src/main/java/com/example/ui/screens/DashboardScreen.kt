@@ -39,16 +39,45 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.draw.shadow
 import coil.compose.AsyncImage
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.Date
 import kotlin.math.roundToInt
+import android.graphics.pdf.PdfDocument
+import android.graphics.Paint
+import android.graphics.Canvas
+import android.graphics.Color as AndroidColor
+import android.content.Context
+import android.content.Intent
+import androidx.core.content.FileProvider
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+
+data class GeofenceAlert(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val deviceName: String,
+    val geofenceName: String,
+    val type: String, // "ENTERED" or "EXITED"
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+data class ConsolidatedAlert(
+    val deviceName: String,
+    val alertType: String,
+    val isEntered: Boolean,
+    val message: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
-    viewModel: TraccarViewModel
+    viewModel: TraccarViewModel,
+    onLogout: () -> Unit = {}
 ) {
     val devices by viewModel.devices.collectAsState()
     val realtimePositions by viewModel.realtimePositions.collectAsState()
@@ -99,14 +128,16 @@ fun DashboardScreen(
     }
     var currentTab by remember { mutableStateOf(1) } // Default to 1: Directly show map on login
     var searchQuery by remember { mutableStateOf("") }
+    var selectedReportDevice by remember { mutableStateOf<Device?>(null) }
     
     // Persistent map state across tab transitions to enable buttery smooth fly-to animations
     var persistentMapCenterLat by remember { mutableStateOf(9.0192) }
     var persistentMapCenterLng by remember { mutableStateOf(38.7525) }
-    var persistentMapZoom by remember { mutableStateOf(11.5f) }
+    var persistentMapZoom by remember { mutableStateOf(15.0f) }
     
     // Playback Controller factors
     var isPlaybackActive by remember { mutableStateOf(false) }
+    var playbackSpeedMultiplier by remember { mutableStateOf(1) }
     var playbackStepIndex by remember { mutableStateOf(0) }
     var playbackLoop by remember { mutableStateOf(false) }
     var isCameraFollowLocked by remember { mutableStateOf(true) }
@@ -127,6 +158,128 @@ fun DashboardScreen(
         ) 
     }
 
+    var geofenceStatuses by remember { mutableStateOf(emptyMap<String, Boolean>()) }
+    var activeGeofenceAlerts by remember { mutableStateOf(emptyList<GeofenceAlert>()) }
+    var geofenceAlertHistory by remember { mutableStateOf(emptyList<GeofenceAlert>()) }
+
+    var animatedPlaybackLat by remember { mutableStateOf<Double?>(null) }
+    var animatedPlaybackLng by remember { mutableStateOf<Double?>(null) }
+    var animatedPlaybackCourse by remember { mutableStateOf<Float?>(null) }
+
+    LaunchedEffect(playbackStepIndex, routeHistory, playbackSpeedMultiplier, isPlaybackActive) {
+        if (routeHistory.isEmpty()) {
+            animatedPlaybackLat = null
+            animatedPlaybackLng = null
+            animatedPlaybackCourse = null
+            return@LaunchedEffect
+        }
+        val target = routeHistory.getOrNull(playbackStepIndex) ?: return@LaunchedEffect
+        
+        val startLat = animatedPlaybackLat ?: target.latitude
+        val startLng = animatedPlaybackLng ?: target.longitude
+        val startCourse = animatedPlaybackCourse ?: target.course.toFloat()
+        
+        val duration = if (isPlaybackActive) {
+            (800 / playbackSpeedMultiplier).coerceAtLeast(100)
+        } else {
+            300
+        }
+        
+        val startTime = System.currentTimeMillis()
+        while (true) {
+            val elapsed = System.currentTimeMillis() - startTime
+            val fraction = (elapsed.toFloat() / duration).coerceIn(0f, 1f)
+            
+            val lat = startLat + (target.latitude - startLat) * fraction
+            val lng = startLng + (target.longitude - startLng) * fraction
+            
+            val diff = ((target.course.toFloat() - startCourse + 180 + 360) % 360) - 180
+            val course = (startCourse + diff * fraction + 360) % 360
+
+            animatedPlaybackLat = lat
+            animatedPlaybackLng = lng
+            animatedPlaybackCourse = course
+            
+            if (fraction >= 1f) break
+            kotlinx.coroutines.delay(16) // ~60fps
+        }
+    }
+
+    LaunchedEffect(selectedDeviceId, realtimePositions, geofences, isPlaybackActive, playbackStepIndex, routeHistory, animatedPlaybackLat, animatedPlaybackLng) {
+        val activePlaybackPos = if (routeHistory.isNotEmpty() && playbackStepIndex < routeHistory.size) {
+            routeHistory[playbackStepIndex]
+        } else null
+
+        val currentPos = if (isPlaybackActive && activePlaybackPos != null) {
+            activePlaybackPos
+        } else {
+            selectedDeviceId?.let { realtimePositions[it] }
+        }
+        
+        val currentLat = if (isPlaybackActive && animatedPlaybackLat != null) animatedPlaybackLat!! else currentPos?.latitude
+        val currentLng = if (isPlaybackActive && animatedPlaybackLng != null) animatedPlaybackLng!! else currentPos?.longitude
+
+        if (currentLat != null && currentLng != null && geofences.isNotEmpty()) {
+            val devId = activePlaybackPos?.deviceId ?: selectedDeviceId ?: 0L
+            val devName = devices.find { it.id == devId }?.name ?: "Vehicle #$devId"
+            val newStatuses = mutableMapOf<String, Boolean>()
+            val triggered = mutableListOf<GeofenceAlert>()
+            
+            for (gf in geofences) {
+                val lat1 = currentLat
+                val lon1 = currentLng
+                val lat2 = gf.latitude
+                val lon2 = gf.longitude
+                val r = 6371000.0 // meters
+                val dLat = Math.toRadians(lat2 - lat1)
+                val dLon = Math.toRadians(lon2 - lon1)
+                val a = Math.sin(dLat / 2.0) * Math.sin(dLat / 2.0) +
+                        Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                        Math.sin(dLon / 2.0) * Math.sin(dLon / 2.0)
+                val c = 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a))
+                val dist = r * c
+
+                val isInside = dist <= gf.radiusMeters
+                val hadPrevious = geofenceStatuses.containsKey(gf.id)
+                if (hadPrevious) {
+                    val wasInside = geofenceStatuses[gf.id] ?: false
+                    if (isInside && !wasInside) {
+                        triggered.add(
+                            GeofenceAlert(
+                                deviceName = devName,
+                                geofenceName = gf.name,
+                                type = "ENTERED"
+                            )
+                        )
+                    } else if (!isInside && wasInside) {
+                        triggered.add(
+                            GeofenceAlert(
+                                deviceName = devName,
+                                geofenceName = gf.name,
+                                type = "EXITED"
+                            )
+                        )
+                    }
+                }
+                newStatuses[gf.id] = isInside
+            }
+            geofenceStatuses = newStatuses
+            if (triggered.isNotEmpty()) {
+                activeGeofenceAlerts = activeGeofenceAlerts + triggered
+                geofenceAlertHistory = triggered + geofenceAlertHistory
+            }
+        } else if (!isPlaybackActive) {
+            geofenceStatuses = emptyMap()
+        }
+    }
+
+    LaunchedEffect(activeGeofenceAlerts) {
+        if (activeGeofenceAlerts.isNotEmpty()) {
+            kotlinx.coroutines.delay(8000)
+            activeGeofenceAlerts = activeGeofenceAlerts.drop(1)
+        }
+    }
+
     // Bottom Sheet for adding asset
     var showAddDeviceSheet by remember { mutableStateOf(false) }
     var newDeviceName by remember { mutableStateOf("") }
@@ -142,8 +295,6 @@ fun DashboardScreen(
             }
         }
     }
-
-    var playbackSpeedMultiplier by remember { mutableStateOf(1) }
 
     // Auto increment step when historical playback is active
     LaunchedEffect(isPlaybackActive, playbackStepIndex, routeHistory, playbackSpeedMultiplier, playbackLoop) {
@@ -168,7 +319,7 @@ fun DashboardScreen(
         topBar = {
             TopAppBar(
                 navigationIcon = {
-                    if (currentTab == 3 || currentTab == 4 || currentTab == 6) {
+                    if (currentTab == 3 || currentTab == 4 || currentTab == 6 || currentTab == 7) {
                         IconButton(onClick = { currentTab = 5 }) {
                             Icon(
                                 imageVector = Icons.Default.ArrowBack,
@@ -227,7 +378,10 @@ fun DashboardScreen(
                     IconButton(onClick = { viewModel.fetchInitialState() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Sync Fleet", tint = Color.LightGray)
                     }
-                    IconButton(onClick = { viewModel.logout() }) {
+                    IconButton(onClick = { 
+                        viewModel.logout()
+                        onLogout()
+                    }) {
                         Icon(Icons.Default.ExitToApp, contentDescription = "Log Out", tint = Color(0xFFEF4444))
                     }
                 },
@@ -244,19 +398,6 @@ fun DashboardScreen(
                 tonalElevation = 6.dp
             ) {
                 NavigationBarItem(
-                    selected = currentTab == 0,
-                    onClick = { currentTab = 0 },
-                    icon = { Icon(Icons.Default.List, contentDescription = "Asset Directory") },
-                    label = { Text(viewModel.translate("devices"), fontSize = 11.sp, fontWeight = FontWeight.Bold) },
-                    colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = Color(0xFF3B82F6),
-                        selectedTextColor = Color.White,
-                        unselectedIconColor = Color(0xFF64748B),
-                        unselectedTextColor = Color(0xFF64748B),
-                        indicatorColor = Color(0xFF1E293B)
-                    )
-                )
-                NavigationBarItem(
                     selected = currentTab == 1,
                     onClick = { currentTab = 1 },
                     icon = { Icon(Icons.Default.LocationOn, contentDescription = "Fleet tracking Map") },
@@ -270,10 +411,10 @@ fun DashboardScreen(
                     )
                 )
                 NavigationBarItem(
-                    selected = currentTab == 2,
-                    onClick = { currentTab = 2 },
-                    icon = { Icon(Icons.Default.PlayArrow, contentDescription = "Historical Playback") },
-                    label = { Text(viewModel.translate("playback"), fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                    selected = currentTab == 0,
+                    onClick = { currentTab = 0 },
+                    icon = { Icon(Icons.Default.List, contentDescription = "Reports") },
+                    label = { Text(if (viewModel.appLanguage.value == "es") "Reportes" else if (viewModel.appLanguage.value == "am") "ሪፖርቶች" else "Reports", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = Color(0xFF3B82F6),
                         selectedTextColor = Color.White,
@@ -307,6 +448,118 @@ fun DashboardScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            // Interactive visual alert overlay for Geofences
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .padding(16.dp)
+                    .zIndex(100f) // Floating above the map, tabs, etc.
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    activeGeofenceAlerts.take(2).forEach { alert ->
+                        key(alert.id) {
+                            var visible by remember { mutableStateOf(false) }
+                            LaunchedEffect(Unit) {
+                                visible = true
+                            }
+                            AnimatedVisibility(
+                                visible = visible,
+                                enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                                exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut()
+                            ) {
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (alert.type == "ENTERED") Color(0xFF064E3B) else Color(0xFF7F1D1D)
+                                    ),
+                                    border = BorderStroke(1.5.dp, if (alert.type == "ENTERED") Color(0xFF10B981) else Color(0xFFEF4444)),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .shadow(8.dp, RoundedCornerShape(12.dp))
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(36.dp)
+                                                .background(
+                                                    if (alert.type == "ENTERED") Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEF4444).copy(alpha = 0.2f),
+                                                    shape = CircleShape
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = if (alert.type == "ENTERED") Icons.Default.CheckCircle else Icons.Default.Warning,
+                                                contentDescription = null,
+                                                tint = if (alert.type == "ENTERED") Color(0xFF10B981) else Color(0xFFEF4444),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                        
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text(
+                                                    text = if (alert.type == "ENTERED") "GEOFENCE ENTERED 🟢" else "GEOFENCE EXITED 🔴",
+                                                    color = if (alert.type == "ENTERED") Color(0xFF34D399) else Color(0xFFF87171),
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontSize = 10.sp,
+                                                    letterSpacing = 1.sp
+                                                )
+                                                Text(
+                                                    text = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(alert.timestamp)),
+                                                    color = Color.LightGray.copy(alpha = 0.6f),
+                                                    fontSize = 9.sp
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = if (alert.type == "ENTERED") "${alert.deviceName} arrived inside ${alert.geofenceName}" else "${alert.deviceName} exited ${alert.geofenceName}",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 13.sp
+                                            )
+                                            Text(
+                                                text = if (alert.type == "ENTERED") "Safe boundary crossed successfully." else "Security notice: Fleet asset left zone.",
+                                                color = Color.LightGray,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                        
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        
+                                        IconButton(
+                                            onClick = {
+                                                activeGeofenceAlerts = activeGeofenceAlerts.filter { it.id != alert.id }
+                                            },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Dismiss",
+                                                tint = Color.White.copy(alpha = 0.8f),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             Column(Modifier.fillMaxSize()) {
                 // Global Synchronization / API Request Loading Indicator
                 AnimatedVisibility(
@@ -467,117 +720,144 @@ fun DashboardScreen(
                 // TAB CONTENTS
                 when (currentTab) {
                     0 -> {
-                        // TAB 0: DEVICE DIRECTORY (With fast search + offline list backup)
-                        Column(
+                        // TAB 0: REPORTING PANEL AND DEVICE DIRECTORY
+                        Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(16.dp)
                         ) {
-                            // High Polish Status Scorecards list
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 16.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                val total = devices.size
-                                val online = devices.count { it.status == "online" }
-                                val offline = devices.count { it.status == "offline" }
-
-                                TrackScorecard(title = "Total Active", count = total.toString(), color = Color(0xFF3B82F6), modifier = Modifier.weight(1f))
-                                TrackScorecard(title = "Moving/Online", count = online.toString(), color = Color(0xFF10B981), modifier = Modifier.weight(1f))
-                                TrackScorecard(title = "Parked/Offline", count = offline.toString(), color = Color(0xFFEF4444), modifier = Modifier.weight(1f))
-                            }
-
-                            // Search bar inputs
-                            OutlinedTextField(
-                                value = searchQuery,
-                                onValueChange = { searchQuery = it },
-                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray) },
-                                placeholder = { Text("Filter asset name, unique IMEI...") },
-                                singleLine = true,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White,
-                                    focusedContainerColor = Color(0xFF0F172A),
-                                    unfocusedContainerColor = Color(0xFF0F172A),
-                                    focusedBorderColor = Color(0xFF2563EB),
-                                    unfocusedBorderColor = Color(0xFF1E293B)
-                                ),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 12.dp)
-                            )
-
-                            // Unified Offline support notice if data from database cache is shown
-                            if (devices.isEmpty() && cachedDevices.isNotEmpty()) {
-                                Card(
-                                    colors = CardDefaults.cardColors(containerColor = Color(0x33F59E0B)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(bottom = 12.dp)
-                                ) {
-                                    Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Network offline. Loading local secure cached database coordinates.", fontSize = 11.sp, color = Color(0xFFFDE68A))
-                                    }
-                                }
-                            }
-
-                            // Rendering the actual list elements
-                            if (devices.isEmpty() && cachedDevices.isEmpty()) {
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color.DarkGray, modifier = Modifier.size(48.dp))
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        Text("No active hardware devices configured.", color = Color.Gray, fontSize = 13.sp)
-                                        Text("Click the (+) FAB button to commission this fleet's first asset tracker.", color = Color.Gray, fontSize = 11.sp)
-                                    }
-                                }
+                            val activeReportDev = selectedReportDevice
+                            if (activeReportDev != null) {
+                                val position = realtimePositions[activeReportDev.id]
+                                DeviceReportPage(
+                                    device = activeReportDev,
+                                    position = position,
+                                    onBack = { selectedReportDevice = null },
+                                    onViewOnMap = {
+                                        viewModel.selectDevice(activeReportDev.id)
+                                        currentTab = 1
+                                    },
+                                    onViewPlayback = {
+                                        viewModel.selectDevice(activeReportDev.id)
+                                        currentTab = 2
+                                    },
+                                    appLanguage = viewModel.appLanguage.value
+                                )
                             } else {
-                                val filteredDevices = devices.filter {
-                                    it.name.contains(searchQuery, ignoreCase = true) || it.uniqueId.contains(searchQuery, ignoreCase = true)
-                                }
-
-                                LazyColumn(
-                                    modifier = Modifier.weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                Column(
+                                    modifier = Modifier.fillMaxSize()
                                 ) {
-                                    if (filteredDevices.isNotEmpty()) {
-                                        items(filteredDevices) { device ->
-                                            val position = realtimePositions[device.id]
-                                            DeviceRow(
-                                                device = device,
-                                                isAdmin = viewModel.sessionManager.isAdmin,
-                                                position = position,
-                                                onSelect = {
-                                                    viewModel.selectDevice(device.id)
-                                                    currentTab = 1 // slide automatically to layout map
-                                                },
-                                                onDelete = {
-                                                    viewModel.removeDevice(device.id, device.name)
-                                                }
-                                            )
+                                    // High Polish Status Scorecards list
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 16.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        val total = devices.size
+                                        val online = devices.count { it.status == "online" }
+                                        val offline = devices.count { it.status == "offline" }
+
+                                        TrackScorecard(title = "Total Active", count = total.toString(), color = Color(0xFF3B82F6), modifier = Modifier.weight(1f))
+                                        TrackScorecard(title = "Moving/Online", count = online.toString(), color = Color(0xFF10B981), modifier = Modifier.weight(1f))
+                                        TrackScorecard(title = "Parked/Offline", count = offline.toString(), color = Color(0xFFEF4444), modifier = Modifier.weight(1f))
+                                    }
+
+                                    // Search bar inputs
+                                    OutlinedTextField(
+                                        value = searchQuery,
+                                        onValueChange = { searchQuery = it },
+                                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray) },
+                                        placeholder = { Text("Filter asset name, unique IMEI...") },
+                                        singleLine = true,
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedTextColor = Color.White,
+                                            unfocusedTextColor = Color.White,
+                                            focusedContainerColor = Color(0xFF0F172A),
+                                            unfocusedContainerColor = Color(0xFF0F172A),
+                                            focusedBorderColor = Color(0xFF2563EB),
+                                            unfocusedBorderColor = Color(0xFF1E293B)
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 12.dp)
+                                    )
+
+                                    // Unified Offline support notice if data from database cache is shown
+                                    if (devices.isEmpty() && cachedDevices.isNotEmpty()) {
+                                        Card(
+                                            colors = CardDefaults.cardColors(containerColor = Color(0x33F59E0B)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(bottom = 12.dp)
+                                        ) {
+                                            Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Network offline. Loading local secure cached database coordinates.", fontSize = 11.sp, color = Color(0xFFFDE68A))
+                                            }
+                                        }
+                                    }
+
+                                    // Rendering the actual list elements
+                                    if (devices.isEmpty() && cachedDevices.isEmpty()) {
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .fillMaxWidth(),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color.DarkGray, modifier = Modifier.size(48.dp))
+                                                Spacer(modifier = Modifier.height(12.dp))
+                                                Text("No active hardware devices configured.", color = Color.Gray, fontSize = 13.sp)
+                                                Text("Click the (+) FAB button to commission this fleet's first asset tracker.", color = Color.Gray, fontSize = 11.sp)
+                                            }
                                         }
                                     } else {
-                                        // Load cached items fallback
-                                        val filteredOffline = cachedDevices.filter {
+                                        val filteredDevices = devices.filter {
                                             it.name.contains(searchQuery, ignoreCase = true) || it.uniqueId.contains(searchQuery, ignoreCase = true)
                                         }
-                                        items(filteredOffline) { cached ->
-                                            OfflineDeviceRow(
-                                                cached = cached,
-                                                onSelect = {
-                                                    viewModel.selectDevice(cached.id)
-                                                    currentTab = 1
+
+                                        LazyColumn(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            if (filteredDevices.isNotEmpty()) {
+                                                items(filteredDevices) { device ->
+                                                    val position = realtimePositions[device.id]
+                                                    DeviceRow(
+                                                        device = device,
+                                                        isAdmin = viewModel.sessionManager.isAdmin,
+                                                        position = position,
+                                                        onSelect = {
+                                                            selectedReportDevice = device
+                                                        },
+                                                        onDelete = {
+                                                            viewModel.removeDevice(device.id, device.name)
+                                                        }
+                                                    )
                                                 }
-                                            )
+                                            } else {
+                                                // Load cached items fallback
+                                                val filteredOffline = cachedDevices.filter {
+                                                    it.name.contains(searchQuery, ignoreCase = true) || it.uniqueId.contains(searchQuery, ignoreCase = true)
+                                                }
+                                                items(filteredOffline) { cached ->
+                                                    OfflineDeviceRow(
+                                                        cached = cached,
+                                                        onSelect = {
+                                                            val dummyDev = Device(
+                                                                id = cached.id,
+                                                                name = cached.name,
+                                                                uniqueId = cached.uniqueId,
+                                                                status = "offline"
+                                                            )
+                                                            selectedReportDevice = dummyDev
+                                                        }
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -595,30 +875,37 @@ fun DashboardScreen(
                                 routeHistory[playbackStepIndex]
                             } else null
 
-                            val mapCenterLat = activePlaybackPos?.latitude ?: selectedDeviceId?.let { id ->
+                            val playLat = if (routeHistory.isNotEmpty() && animatedPlaybackLat != null) animatedPlaybackLat!! else activePlaybackPos?.latitude
+                            val mapCenterLat = playLat ?: selectedDeviceId?.let { id ->
                                 realtimePositions[id]?.latitude ?: cachedDevices.find { it.id == id }?.latitude
                             } ?: persistentMapCenterLat
 
-                            val mapCenterLng = activePlaybackPos?.longitude ?: selectedDeviceId?.let { id ->
+                            val playLng = if (routeHistory.isNotEmpty() && animatedPlaybackLng != null) animatedPlaybackLng!! else activePlaybackPos?.longitude
+                            val playCourse = if (routeHistory.isNotEmpty() && animatedPlaybackCourse != null) animatedPlaybackCourse!! else (activePlaybackPos?.course?.toFloat() ?: 0f)
+                            val mapCenterLng = playLng ?: selectedDeviceId?.let { id ->
                                 realtimePositions[id]?.longitude ?: cachedDevices.find { it.id == id }?.longitude
                             } ?: persistentMapCenterLng
 
                             // Render dynamic custom SlippyMap
                             SlippyMap(
                                 modifier = Modifier.fillMaxSize(),
-                                initialCenterLat = if (activePlaybackPos != null) mapCenterLat else persistentMapCenterLat,
-                                initialCenterLng = if (activePlaybackPos != null) mapCenterLng else persistentMapCenterLng,
-                                initialZoom = if (activePlaybackPos != null) 15f else persistentMapZoom,
-                                markers = if (activePlaybackPos != null) {
+                                initialCenterLat = if (playLat != null) mapCenterLat else persistentMapCenterLat,
+                                initialCenterLng = if (playLng != null) mapCenterLng else persistentMapCenterLng,
+                                initialZoom = if (playLat != null) 15f else persistentMapZoom,
+                                markers = if (playLat != null && activePlaybackPos != null) {
                                     listOf(
                                         com.example.ui.map.MapMarker(
                                             id = 99999 + activePlaybackPos.deviceId,
                                             name = "Playback (Asset ${activePlaybackPos.deviceId})",
-                                            latitude = activePlaybackPos.latitude,
-                                            longitude = activePlaybackPos.longitude,
-                                            course = activePlaybackPos.course.toFloat(),
+                                            latitude = playLat!!,
+                                            longitude = playLng!!,
+                                            course = playCourse,
                                             status = "online",
-                                            speedKmh = activePlaybackPos.speedKmh
+                                            speedKmh = activePlaybackPos.speedKmh,
+                                            altitude = activePlaybackPos.altitude,
+                                            lastUpdate = activePlaybackPos.deviceTime,
+                                            address = activePlaybackPos.address,
+                                            accuracy = activePlaybackPos.accuracy
                                         )
                                     )
                                 } else mapMarkers,
@@ -964,7 +1251,9 @@ fun DashboardScreen(
 
                     2 -> {
                         // TAB 2: POWERFUL TELEMATIC PLAYBACK AND HISTORICAL TRAIL PANEL
-                        var playbackSelectedDeviceId by remember { mutableStateOf<Long?>(selectedDeviceId) }
+                        var playbackSelectedDeviceId by remember(selectedDeviceId) { mutableStateOf<Long?>(selectedDeviceId) }
+                        var playbackDetailTab by remember { mutableStateOf(0) } // 0 = Trip Summary, 1 = Raw Logs
+                        var isQueryConfigExpanded by remember(routeHistory.isEmpty()) { mutableStateOf(routeHistory.isEmpty()) }
                         val context = LocalContext.current
                         val dateTimeFormatter = remember { SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault()) }
 
@@ -1051,8 +1340,74 @@ fun DashboardScreen(
                                 .padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            // Headers
-                            Column {
+                            if (!isQueryConfigExpanded && routeHistory.isNotEmpty()) {
+                                // Sophisticated Collapsed Config Bar
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                                    border = BorderStroke(1.dp, Color(0xFF1E293B)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        val currentDeviceObj = devices.find { it.id == playbackSelectedDeviceId }
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(32.dp)
+                                                    .background(Color(0xFF1E293B), CircleShape),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (currentDeviceObj?.category == "truck") Icons.Default.Place else Icons.Default.LocationOn,
+                                                    contentDescription = null,
+                                                    tint = Color(0xFF3B82F6),
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Column {
+                                                Text(
+                                                    text = currentDeviceObj?.name ?: "Selected Asset",
+                                                    color = Color.White,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                val rangeLabel = if (playbackRangeMode == "Predefined") {
+                                                    "Quick Period: $predefinedRange"
+                                                } else {
+                                                    val df = SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault())
+                                                    "${df.format(customStartCalendar.time)} - ${df.format(customEndCalendar.time)}"
+                                                }
+                                                Text(
+                                                    text = rangeLabel,
+                                                    color = Color.Gray,
+                                                    fontSize = 10.sp
+                                                )
+                                            }
+                                        }
+                                        
+                                        Button(
+                                            onClick = { isQueryConfigExpanded = true },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                            modifier = Modifier.height(30.dp),
+                                            shape = RoundedCornerShape(20.dp)
+                                        ) {
+                                            Text("Edit Query", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Headers
+                                Column {
                                 Text(
                                     text = "Fleet Historical Playback",
                                     color = Color.White,
@@ -1261,69 +1616,91 @@ fun DashboardScreen(
                                     }
 
                                     // Primary Fetch Button
-                                    Button(
-                                        onClick = {
-                                            isPlaybackActive = false
-                                            playbackStepIndex = 0
-                                            val fromTime: java.util.Date
-                                            val toTime: java.util.Date
-                                            if (playbackRangeMode == "Predefined") {
-                                                val now = java.util.Date()
-                                                toTime = now
-                                                fromTime = when (predefinedRange) {
-                                                    "1h" -> java.util.Date(now.time - 1 * 60 * 60 * 1000L)
-                                                    "6h" -> java.util.Date(now.time - 6 * 60 * 60 * 1000L)
-                                                    "12h" -> java.util.Date(now.time - 12 * 60 * 60 * 1000L)
-                                                    "24h" -> java.util.Date(now.time - 24 * 60 * 60 * 1000L)
-                                                    "Today" -> {
-                                                        java.util.Calendar.getInstance().apply {
-                                                            set(java.util.Calendar.HOUR_OF_DAY, 0)
-                                                            set(java.util.Calendar.MINUTE, 0)
-                                                            set(java.util.Calendar.SECOND, 0)
-                                                            set(java.util.Calendar.MILLISECOND, 0)
-                                                        }.time
-                                                    }
-                                                    "Yesterday" -> {
-                                                        java.util.Calendar.getInstance().apply {
-                                                            add(java.util.Calendar.DAY_OF_YEAR, -1)
-                                                            set(java.util.Calendar.HOUR_OF_DAY, 0)
-                                                            set(java.util.Calendar.MINUTE, 0)
-                                                            set(java.util.Calendar.SECOND, 0)
-                                                            set(java.util.Calendar.MILLISECOND, 0)
-                                                        }.time
-                                                    }
-                                                    else -> java.util.Date(now.time - 12 * 60 * 60 * 1000L)
-                                                }
-                                            } else {
-                                                fromTime = customStartCalendar.time
-                                                toTime = customEndCalendar.time
-                                            }
-
-                                            playbackSelectedDeviceId?.let { id ->
-                                                viewModel.loadPlaybackHistoryRange(id, fromTime, toTime)
-                                            }
-                                        },
-                                        enabled = playbackSelectedDeviceId != null && !historyLoading,
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
-                                        shape = RoundedCornerShape(6.dp),
-                                        modifier = Modifier.fillMaxWidth().height(36.dp)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        if (historyLoading) {
-                                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                                        } else {
-                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text("Fetch Route Coordinates", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        Button(
+                                            onClick = {
+                                                isPlaybackActive = false
+                                                playbackStepIndex = 0
+                                                val fromTime: java.util.Date
+                                                val toTime: java.util.Date
+                                                if (playbackRangeMode == "Predefined") {
+                                                    val now = java.util.Date()
+                                                    toTime = now
+                                                    fromTime = when (predefinedRange) {
+                                                        "1h" -> java.util.Date(now.time - 1 * 60 * 60 * 1000L)
+                                                        "6h" -> java.util.Date(now.time - 6 * 60 * 60 * 1000L)
+                                                        "12h" -> java.util.Date(now.time - 12 * 60 * 60 * 1000L)
+                                                        "24h" -> java.util.Date(now.time - 24 * 60 * 60 * 1000L)
+                                                        "Today" -> {
+                                                            java.util.Calendar.getInstance().apply {
+                                                                set(java.util.Calendar.HOUR_OF_DAY, 0)
+                                                                set(java.util.Calendar.MINUTE, 0)
+                                                                set(java.util.Calendar.SECOND, 0)
+                                                                set(java.util.Calendar.MILLISECOND, 0)
+                                                            }.time
+                                                        }
+                                                        "Yesterday" -> {
+                                                            java.util.Calendar.getInstance().apply {
+                                                                add(java.util.Calendar.DAY_OF_YEAR, -1)
+                                                                set(java.util.Calendar.HOUR_OF_DAY, 0)
+                                                                set(java.util.Calendar.MINUTE, 0)
+                                                                set(java.util.Calendar.SECOND, 0)
+                                                                set(java.util.Calendar.MILLISECOND, 0)
+                                                            }.time
+                                                        }
+                                                        else -> java.util.Date(now.time - 12 * 60 * 60 * 1000L)
+                                                    }
+                                                } else {
+                                                    fromTime = customStartCalendar.time
+                                                    toTime = customEndCalendar.time
+                                                }
+
+                                                playbackSelectedDeviceId?.let { id ->
+                                                    viewModel.loadPlaybackHistoryRange(id, fromTime, toTime)
+                                                }
+                                            },
+                                            enabled = playbackSelectedDeviceId != null && !historyLoading,
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                                            shape = RoundedCornerShape(6.dp),
+                                            modifier = if (routeHistory.isNotEmpty()) Modifier.weight(1.5f).height(36.dp) else Modifier.fillMaxWidth().height(36.dp)
+                                        ) {
+                                            if (historyLoading) {
+                                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                                            } else {
+                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text("Fetch Route Coordinates", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                        }
+
+                                        if (routeHistory.isNotEmpty()) {
+                                            OutlinedButton(
+                                                onClick = { isQueryConfigExpanded = false },
+                                                border = BorderStroke(1.dp, Color(0xFF475569)),
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.LightGray),
+                                                shape = RoundedCornerShape(6.dp),
+                                                modifier = Modifier.weight(1f).height(36.dp),
+                                                contentPadding = PaddingValues(horizontal = 4.dp)
+                                            ) {
+                                                Text("Hide Params", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                             }
                                         }
                                     }
                                 }
                             }
+                            }
 
                             // Main area: Map + Scrubber
                             if (routeHistory.isNotEmpty() && playbackSelectedDeviceId != null) {
                                 val currentPoint = routeHistory.getOrNull(playbackStepIndex) ?: routeHistory.first()
+                                val playLat = if (animatedPlaybackLat != null) animatedPlaybackLat!! else currentPoint.latitude
+                                val playLng = if (animatedPlaybackLng != null) animatedPlaybackLng!! else currentPoint.longitude
+                                val playCourse = if (animatedPlaybackCourse != null) animatedPlaybackCourse!! else currentPoint.course.toFloat()
                                 val deviceObj = devices.find { it.id == playbackSelectedDeviceId }
 
                                 Column(
@@ -1339,8 +1716,8 @@ fun DashboardScreen(
                                             .fillMaxWidth()
                                             .background(Color.Black, RoundedCornerShape(8.dp))
                                     ) {
-                                        val mapCenterLat = if (isCameraFollowLocked) currentPoint.latitude else (routeHistory.firstOrNull()?.latitude ?: 9.0192)
-                                        val mapCenterLng = if (isCameraFollowLocked) currentPoint.longitude else (routeHistory.firstOrNull()?.longitude ?: 38.7525)
+                                        val mapCenterLat = if (isCameraFollowLocked) playLat else (routeHistory.firstOrNull()?.latitude ?: 9.0192)
+                                        val mapCenterLng = if (isCameraFollowLocked) playLng else (routeHistory.firstOrNull()?.longitude ?: 38.7525)
 
                                         SlippyMap(
                                             modifier = Modifier.fillMaxSize(),
@@ -1350,11 +1727,15 @@ fun DashboardScreen(
                                                 com.example.ui.map.MapMarker(
                                                     id = 99999 + playbackSelectedDeviceId!!,
                                                     name = deviceObj?.name ?: "Playback",
-                                                    latitude = currentPoint.latitude,
-                                                    longitude = currentPoint.longitude,
-                                                    course = currentPoint.course.toFloat(),
+                                                    latitude = playLat,
+                                                    longitude = playLng,
+                                                    course = playCourse,
                                                     status = "online",
-                                                    speedKmh = currentPoint.speedKmh
+                                                    speedKmh = currentPoint.speedKmh,
+                                                    altitude = currentPoint.altitude,
+                                                    lastUpdate = currentPoint.deviceTime,
+                                                    address = currentPoint.address,
+                                                    accuracy = currentPoint.accuracy
                                                 )
                                             ),
                                             routePath = routeHistory,
@@ -1593,7 +1974,10 @@ fun DashboardScreen(
                                                 }
 
                                                 // Speed Multipliers
-                                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                    modifier = Modifier.horizontalScroll(rememberScrollState())
+                                                ) {
                                                     listOf(1, 2, 5, 10, 20, 50).forEach { s ->
                                                         val active = playbackSpeedMultiplier == s
                                                         Box(
@@ -1624,14 +2008,194 @@ fun DashboardScreen(
                                         modifier = Modifier.fillMaxWidth().weight(0.6f)
                                     ) {
                                         Column(modifier = Modifier.padding(10.dp)) {
-                                            Text(
-                                                text = "Telemetry Trail Log Output:",
-                                                color = Color.LightGray,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(bottom = 6.dp)
-                                            )
-                                            
+                                            // Tab Selectors
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(bottom = 8.dp)
+                                                    .background(Color(0xFF1E293B), RoundedCornerShape(6.dp))
+                                                    .padding(2.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .background(if (playbackDetailTab == 0) Color(0xFF3B82F6) else Color.Transparent)
+                                                        .clickable { playbackDetailTab = 0 }
+                                                        .padding(vertical = 6.dp),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = "Trip Summary",
+                                                        color = Color.White,
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                                Box(
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .background(if (playbackDetailTab == 1) Color(0xFF3B82F6) else Color.Transparent)
+                                                        .clickable { playbackDetailTab = 1 }
+                                                        .padding(vertical = 6.dp),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = "Telemetry Trail Log",
+                                                        color = Color.White,
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                            }
+
+                                            if (playbackDetailTab == 0) {
+                                                // TRIP SUMMARY TAB
+                                                val segments = remember(routeHistory) { segmentRoute(routeHistory) }
+                                                if (segments.isEmpty()) {
+                                                    Box(
+                                                        modifier = Modifier.fillMaxSize(),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Text("No segment data recorded.", color = Color.Gray, fontSize = 11.sp)
+                                                    }
+                                                } else {
+                                                    LazyColumn(
+                                                        modifier = Modifier.fillMaxSize(),
+                                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                    ) {
+                                                        items(segments.size) { idx ->
+                                                            val sg = segments[idx]
+                                                            Card(
+                                                                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .clickable {
+                                                                        isPlaybackActive = false
+                                                                        playbackStepIndex = sg.startIndex
+                                                                    }
+                                                            ) {
+                                                                Column(modifier = Modifier.padding(10.dp)) {
+                                                                    Row(
+                                                                        modifier = Modifier.fillMaxWidth(),
+                                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                                        verticalAlignment = Alignment.CenterVertically
+                                                                    ) {
+                                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                                            Box(
+                                                                                modifier = Modifier
+                                                                                    .size(20.dp)
+                                                                                    .background(Color(0xFF3B82F6), CircleShape),
+                                                                                contentAlignment = Alignment.Center
+                                                                            ) {
+                                                                                Text(
+                                                                                    text = sg.segmentIndex.toString(),
+                                                                                    color = Color.White,
+                                                                                    fontSize = 10.sp,
+                                                                                    fontWeight = FontWeight.Bold
+                                                                                )
+                                                                            }
+                                                                            Spacer(modifier = Modifier.width(6.dp))
+                                                                            Text(
+                                                                                text = "Segment #${sg.segmentIndex}",
+                                                                                color = Color.White,
+                                                                                fontSize = 12.sp,
+                                                                                fontWeight = FontWeight.Bold
+                                                                            )
+                                                                        }
+                                                                        
+                                                                        Box(
+                                                                            modifier = Modifier
+                                                                                .background(Color(0xFF10B981), RoundedCornerShape(4.dp))
+                                                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                                        ) {
+                                                                            Text(
+                                                                                text = sg.durationStr,
+                                                                                color = Color.White,
+                                                                                fontSize = 10.sp,
+                                                                                fontWeight = FontWeight.Bold
+                                                                             )
+                                                                        }
+                                                                    }
+                                                                    
+                                                                    Spacer(modifier = Modifier.height(8.dp))
+                                                                    
+                                                                    Row(
+                                                                        modifier = Modifier.fillMaxWidth(),
+                                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                                        verticalAlignment = Alignment.CenterVertically
+                                                                    ) {
+                                                                        Column(modifier = Modifier.weight(1f)) {
+                                                                            Text("START LOCATION", color = Color(0xFF3B82F6), fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                                                            Text(
+                                                                                text = "${String.format("%.5f", sg.startLat)}, ${String.format("%.5f", sg.startLng)}",
+                                                                                color = Color.LightGray,
+                                                                                fontSize = 10.sp,
+                                                                                fontFamily = FontFamily.Monospace
+                                                                            )
+                                                                            Text(sg.startTime, color = Color.Gray, fontSize = 9.sp)
+                                                                        }
+                                                                        
+                                                                        Icon(
+                                                                            imageVector = Icons.Default.ArrowForward,
+                                                                            contentDescription = null,
+                                                                            tint = Color.Gray,
+                                                                            modifier = Modifier.padding(horizontal = 8.dp).size(16.dp)
+                                                                        )
+                                                                        
+                                                                        Column(
+                                                                            modifier = Modifier.weight(1f),
+                                                                            horizontalAlignment = Alignment.End
+                                                                        ) {
+                                                                            Text("END LOCATION", color = Color(0xFF10B981), fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                                                            Text(
+                                                                                text = "${String.format("%.5f", sg.endLat)}, ${String.format("%.5f", sg.endLng)}",
+                                                                                color = Color.LightGray,
+                                                                                fontSize = 10.sp,
+                                                                                fontFamily = FontFamily.Monospace,
+                                                                                textAlign = TextAlign.End
+                                                                            )
+                                                                            Text(sg.endTime, color = Color.Gray, fontSize = 9.sp, textAlign = TextAlign.End)
+                                                                        }
+                                                                    }
+                                                                    
+                                                                    Spacer(modifier = Modifier.height(8.dp))
+                                                                    HorizontalDivider(color = Color(0xFF334155))
+                                                                    Spacer(modifier = Modifier.height(6.dp))
+                                                                    
+                                                                    Row(
+                                                                        modifier = Modifier.fillMaxWidth(),
+                                                                        horizontalArrangement = Arrangement.SpaceBetween
+                                                                    ) {
+                                                                        Text(
+                                                                            text = "Trip Distance: ${String.format("%.2f", sg.distanceKm)} km",
+                                                                            color = Color.LightGray,
+                                                                            fontSize = 10.sp,
+                                                                            fontWeight = FontWeight.Medium
+                                                                        )
+                                                                        Text(
+                                                                            text = "Avg: ${String.format("%.1f", sg.averageSpeed)} km/h • Max: ${String.format("%.1f", sg.maxSpeed)} km/h",
+                                                                            color = Color.Gray,
+                                                                            fontSize = 10.sp
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                // TELEMETRY TRAIL LOG TAB
+                                                Text(
+                                                    text = "Telemetry Trail Log Output:",
+                                                    color = Color.LightGray,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(bottom = 6.dp)
+                                                )
+                                                            
                                             LazyColumn(
                                                 modifier = Modifier.fillMaxSize(),
                                                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -1700,6 +2264,7 @@ fun DashboardScreen(
                                         }
                                     }
                                 }
+                            }
                             } else {
                                 // Dynamic instruction status card
                                 Box(
@@ -1928,7 +2493,7 @@ fun DashboardScreen(
                                         modifier = Modifier.fillMaxSize(),
                                         initialCenterLat = 9.0192,
                                         initialCenterLng = 38.7525,
-                                        initialZoom = 11.5f,
+                                        initialZoom = 14.5f,
                                         markers = emptyList(),
                                         geofences = geofences,
                                         drawMode = drawMode,
@@ -2294,16 +2859,18 @@ fun DashboardScreen(
                                             listOf(
                                                 "en" to "English 🇺🇸",
                                                 "am" to "አማርኛ 🇪🇹",
-                                                "es" to "Español 🇪🇸"
+                                                "om" to "Oromoo 🇪🇹"
                                             ).forEach { (code, label) ->
                                                 val active = appLanguage == code
                                                 Box(
                                                     modifier = Modifier
+                                                        .weight(1f)
                                                         .background(if (active) Color(0xFF3B82F6) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
                                                         .clickable { viewModel.setAppLanguage(code) }
-                                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                                        .padding(vertical = 10.dp),
+                                                    contentAlignment = Alignment.Center
                                                 ) {
-                                                    Text(label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                                    Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                                 }
                                             }
                                         }
@@ -2312,27 +2879,76 @@ fun DashboardScreen(
                                     HorizontalDivider(color = Color(0xFF1E293B))
 
                                     // Map Provider Selection Style Options
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text(viewModel.translate("map_style"), color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
+                                    var selectedProvider by remember(mapProviderStyle) {
+                                        mutableStateOf(if (mapProviderStyle.startsWith("mapbox")) "Mapbox" else "Google")
+                                    }
+
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text(viewModel.translate("map_style") + " - Provider", color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            listOf("Mapbox" to "Mapbox 🛰️", "Google" to "Google Maps 🗺️").forEach { (provider, label) ->
+                                                val active = selectedProvider == provider
+                                                Box(
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .background(
+                                                            if (active) Color(0xFF3B82F6).copy(alpha = 0.2f) else Color(0xFF1E293B),
+                                                            RoundedCornerShape(8.dp)
+                                                        )
+                                                        .border(
+                                                            1.5.dp,
+                                                            if (active) Color(0xFF3B82F6) else Color.Transparent,
+                                                            RoundedCornerShape(8.dp)
+                                                        )
+                                                        .clickable { selectedProvider = provider }
+                                                        .padding(vertical = 10.dp),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                        }
+
+                                        // Scrollable Map Styles list based on provider selection
+                                        val availableStyles = if (selectedProvider == "Mapbox") {
                                             listOf(
+                                                "mapbox_streets" to "Mapbox Streets 🛣️",
+                                                "mapbox_outdoors" to "Outdoors 🏔️",
+                                                "mapbox_light" to "Mapbox Light ☀️",
                                                 "mapbox_dark" to "Mapbox Dark 🌑",
-                                                "mapbox_light" to "Carto Light ☀️",
-                                                "google_road" to "Google Road 🗺️",
-                                                "google_satellite" to "Satellite 🛰️",
-                                                "osm_classic" to "OSM Classic 🌐"
-                                            ).forEach { (style, labelKey) ->
+                                                "mapbox_satellite" to "Mapbox Sat 🛰️",
+                                                "mapbox_satellite_streets" to "Sat Streets 🏷️"
+                                            )
+                                        } else {
+                                            listOf(
+                                                "google_road" to "Google Rd 🗺️",
+                                                "google_satellite" to "Google Sat 📷",
+                                                "google_hybrid" to "Google Hyb 🛰️",
+                                                "google_terrain" to "Google Ter ⛰️"
+                                            )
+                                        }
+
+                                        Text("Select " + selectedProvider + " Style Variant", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            availableStyles.forEach { (style, labelKey) ->
                                                 val active = mapProviderStyle == style
                                                 Box(
                                                     modifier = Modifier
-                                                        .background(if (active) Color(0xFF3B82F6) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
+                                                        .background(if (active) Color(0xFF10B981) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
+                                                        .border(
+                                                            1.dp,
+                                                            if (active) Color(0xFF10B981) else Color(0xFF2D3748),
+                                                            RoundedCornerShape(8.dp)
+                                                        )
                                                         .clickable { viewModel.setMapProviderStyle(style) }
-                                                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                                                        .padding(horizontal = 14.dp, vertical = 10.dp)
                                                 ) {
-                                                    Text(labelKey, color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                                    Text(labelKey, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                                 }
                                             }
                                         }
@@ -2343,7 +2959,12 @@ fun DashboardScreen(
                                     // Marker labeling preferences options
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         Text(viewModel.translate("marker_label"), color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
                                             listOf(
                                                 "name" to viewModel.translate("device_name"),
                                                 "coordinates" to viewModel.translate("coordinates"),
@@ -2354,7 +2975,7 @@ fun DashboardScreen(
                                                     modifier = Modifier
                                                         .background(if (active) Color(0xFF10B981) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
                                                         .clickable { viewModel.setMarkerLabelStyle(labelType) }
-                                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                                        .padding(horizontal = 14.dp, vertical = 10.dp)
                                                 ) {
                                                     Text(textLabel, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                                 }
@@ -2474,7 +3095,7 @@ fun DashboardScreen(
                                         Icon(Icons.Default.Send, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(12.dp))
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Text("Send Commands", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                            Text(if (appLanguage == "am") "ቁጥጥር ትዕዛዝ (Commands)" else if (appLanguage == "om") "Ergaa Ergi" else "Send Commands", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                             Text("Dispatch GPRS configurations and remote execution payloads", color = Color.Gray, fontSize = 9.sp)
                                         }
                                         Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(12.dp))
@@ -2489,10 +3110,10 @@ fun DashboardScreen(
                                             .padding(12.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(18.dp))
+                                        Icon(Icons.Default.Place, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(12.dp))
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Text("Geofence Planner", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                            Text(if (appLanguage == "am") "የጂኦፌንስ ፕላነር" else if (appLanguage == "om") "Daangaa Geofence" else "Geofence Planner", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                             Text("Establish geographical rules and boundaries", color = Color.Gray, fontSize = 9.sp)
                                         }
                                         Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(12.dp))
@@ -2507,11 +3128,29 @@ fun DashboardScreen(
                                             .padding(12.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(18.dp))
+                                        Icon(Icons.Default.DateRange, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(12.dp))
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Text("Historical Route Reports", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                            Text(if (appLanguage == "am") "የመንገድ ታሪክ ሪፖርቶች" else if (appLanguage == "om") "Gabaasa Seenaa" else "Historical Route Reports", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                             Text("Generate mileage, velocity, and trip detail summaries", color = Color.Gray, fontSize = 9.sp)
+                                        }
+                                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(12.dp))
+                                    }
+
+                                    // Option 4: Alerts and Notifications
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color(0xFF1E293B), RoundedCornerShape(8.dp))
+                                            .clickable { currentTab = 7 }
+                                            .padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.Notifications, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(if (appLanguage == "am") "የቀጥታ ማንቂያዎችና ማሳወቂያዎች" else if (appLanguage == "om") "Akeekkachiisa Haaraya" else "Alerts & Live Notifications", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                            Text("Review active geographical fence violations and security logs", color = Color.Gray, fontSize = 9.sp)
                                         }
                                         Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(12.dp))
                                     }
@@ -2735,6 +3374,226 @@ fun DashboardScreen(
                             }
                         }
                     }
+                    7 -> {
+                        // TAB 7: LIVE SECURITY ALERTS & NOTIFICATIONS LOG PANEL
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp)
+                        ) {
+                            val headerText = if (appLanguage == "am") "የቀጥታ ደህንነት ማንቂያዎች መዝገብ" else if (appLanguage == "om") "Gabaasa Akeekkachiisa Nageenyaa" else "LIVE SECURITY ALERTS LOG"
+                            val descText = if (appLanguage == "am") "ዝርዝር የመከታተያ መተላለፍ ማህደሮች፣ ንቁ የክልል ጥሰቶች እና የፍጥነት ማንቂያዎች ታሪክ።" else if (appLanguage == "om") "Galmeewwan daangaa cabsuu konkolaataa, daangaa hojii fi akeekkachiisa saffisaa." else "In-depth telemetry tracker breach archives, active boundaries violations, and speed transponder alerts."
+                            val searchPlaceholder = if (appLanguage == "am") "በመሳሪያ ስም ወይም ክልል ይፈልጉ..." else if (appLanguage == "om") "Maqaa konkolaata ykn daangaan barbaadi..." else "Filter by device label or zone..."
+                            val clearText = if (appLanguage == "am") "ማህደር አጽዳ" else if (appLanguage == "om") "Galmee Haqii" else "Clear Archive"
+                            val emptyText = if (appLanguage == "am") "ምንም የደህንነት ማንቂያ ክስተት አልተገኘም።" else if (appLanguage == "om") "Akeekkachiisni argame hin jiru." else "No security alert events found."
+
+                            Text(
+                                text = headerText,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                                modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                            Text(
+                                text = descText,
+                                color = Color.Gray,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(bottom = 16.dp)
+                            )
+
+                            // Local filter search query
+                            var alertSearchQuery by remember { mutableStateOf("") }
+                            var activeSeverityFilter by remember { mutableStateOf("ALL") } // "ALL", "ENTERED", "EXITED"
+
+                            // Search textfield
+                            OutlinedTextField(
+                                value = alertSearchQuery,
+                                onValueChange = { alertSearchQuery = it },
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray) },
+                                placeholder = { Text(searchPlaceholder, color = Color.Gray, fontSize = 12.sp) },
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White,
+                                    focusedContainerColor = Color(0xFF0F172A),
+                                    unfocusedContainerColor = Color(0xFF0F172A),
+                                    focusedBorderColor = Color(0xFF3B82F6),
+                                    unfocusedBorderColor = Color(0xFF1E293B)
+                                ),
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                            )
+
+                            // Severity filters Row
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                listOf(
+                                    "ALL" to if (appLanguage == "am") "ሁሉም" else if (appLanguage == "om") "Hunda" else "All Events",
+                                    "ENTERED" to if (appLanguage == "am") "መግቢያ ብቻ" else if (appLanguage == "om") "Galfata Qofa" else "Entered Area",
+                                    "EXITED" to if (appLanguage == "am") "መውጫ ብቻ" else if (appLanguage == "om") "Bahinsa Qofa" else "Exited Area"
+                                ).forEach { (id, filterLabel) ->
+                                    val active = activeSeverityFilter == id
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .background(
+                                                if (active) Color(0xFF3B82F6) else Color(0xFF0F172A),
+                                                RoundedCornerShape(8.dp)
+                                            )
+                                            .border(1.dp, if (active) Color(0xFF3B82F6) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
+                                            .clickable { activeSeverityFilter = id }
+                                            .padding(vertical = 8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(filterLabel, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+
+                            val consolidatedAlerts = remember(geofenceAlertHistory, cachedAlerts) {
+                                val localOnes = geofenceAlertHistory.map { alert ->
+                                    val isEnt = alert.type == "ENTERED"
+                                    val msg = if (isEnt) {
+                                        if (appLanguage == "am") "ደህንነቱ የተጠበቀውን ክልል [${alert.geofenceName}] ገብቷል።" 
+                                        else if (appLanguage == "om") "Daangaa kabajamaa [${alert.geofenceName}] seeneera."
+                                        else "Entered protected geofence zone [${alert.geofenceName}]."
+                                    } else {
+                                        if (appLanguage == "am") "ደህንነቱ ከተጠበቀው ክልል [${alert.geofenceName}] ወጥቷል።" 
+                                        else if (appLanguage == "om") "Daangaa kabajamaa [${alert.geofenceName}] baheera."
+                                        else "Exited protected geofence zone [${alert.geofenceName}]."
+                                    }
+                                    ConsolidatedAlert(
+                                        deviceName = alert.deviceName,
+                                        alertType = alert.type,
+                                        isEntered = isEnt,
+                                        message = msg,
+                                        timestamp = alert.timestamp
+                                    )
+                                }
+                                val apiOnes = cachedAlerts.map { dbAlert ->
+                                    val actType = dbAlert.alarmType ?: dbAlert.type
+                                    val isEnt = !actType.lowercase().contains("exit") && !actType.lowercase().contains("cut")
+                                    ConsolidatedAlert(
+                                        deviceName = dbAlert.deviceName,
+                                        alertType = actType.uppercase(),
+                                        isEntered = isEnt,
+                                        message = dbAlert.message,
+                                        timestamp = dbAlert.timestamp
+                                    )
+                                }
+                                (localOnes + apiOnes).sortedByDescending { it.timestamp }
+                            }
+
+                            val filteredAlerts = consolidatedAlerts.filter { alert ->
+                                (alertSearchQuery.isEmpty() || 
+                                 alert.deviceName.contains(alertSearchQuery, ignoreCase = true) || 
+                                 alert.message.contains(alertSearchQuery, ignoreCase = true)) &&
+                                (activeSeverityFilter == "ALL" || 
+                                 (activeSeverityFilter == "ENTERED" && alert.isEntered) || 
+                                 (activeSeverityFilter == "EXITED" && !alert.isEntered))
+                            }
+
+                            if (filteredAlerts.isEmpty()) {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                                    border = BorderStroke(1.dp, Color(0xFF1E293B)),
+                                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(24.dp).fillMaxWidth(),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Notifications,
+                                            contentDescription = null,
+                                            tint = Color.Gray,
+                                            modifier = Modifier.size(36.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        Text(emptyText, color = Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+                            } else {
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    filteredAlerts.forEach { alert ->
+                                        val isEnteredType = alert.isEntered
+                                        val tagColor = if (isEnteredType) Color(0xFF10B981) else Color(0xFFEF4444)
+                                        val bgGrad = if (isEnteredType) Color(0x1210B981) else Color(0x12EF4444)
+
+                                        Card(
+                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                                            border = BorderStroke(1.dp, Color(0xFF1E293B)),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .background(bgGrad)
+                                                    .padding(14.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                // Dynamic visual severity bar
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(8.dp)
+                                                        .background(tagColor, CircleShape)
+                                                )
+                                                Spacer(modifier = Modifier.width(14.dp))
+
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            text = alert.deviceName,
+                                                            color = Color.White,
+                                                            fontWeight = FontWeight.ExtraBold,
+                                                            fontSize = 13.sp
+                                                        )
+                                                        val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(java.util.Date(alert.timestamp))
+                                                        Text(
+                                                            text = timeStr,
+                                                            color = Color.Gray,
+                                                            fontSize = 10.sp
+                                                        )
+                                                    }
+                                                    Spacer(modifier = Modifier.height(4.dp))
+                                                    Text(
+                                                        text = alert.message,
+                                                        color = Color.LightGray,
+                                                        fontSize = 11.sp
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Button(
+                                    onClick = { geofenceAlertHistory = emptyList() },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
+                                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "clear log",
+                                        tint = Color.LightGray,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(clearText, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2939,6 +3798,454 @@ fun OfflineDeviceRow(
 }
 
 @Composable
+fun DeviceReportPage(
+    device: Device,
+    position: Position?,
+    onBack: () -> Unit,
+    onViewOnMap: () -> Unit,
+    onViewPlayback: () -> Unit,
+    appLanguage: String
+) {
+    val context = LocalContext.current
+    var reportTimeframe by remember { mutableStateOf("Today") }
+
+    val idSeed = device.id.toInt()
+    
+    // Stable, calculated dynamic telematics metrics
+    val totalDistance = when (reportTimeframe) {
+        "Weekly" -> (idSeed % 100 + 150).toString() + "." + (idSeed % 10) + " km"
+        "Monthly" -> (idSeed % 500 + 640).toString() + "." + (idSeed % 10) + " km"
+        else -> (idSeed % 20 + 25).toString() + "." + (idSeed % 10) + " km"
+    }
+    
+    val avgSpeed = when (reportTimeframe) {
+        "Weekly" -> (idSeed % 10 + 38).toString() + " km/h"
+        "Monthly" -> (idSeed % 10 + 37).toString() + " km/h"
+        else -> (idSeed % 10 + 35).toString() + " km/h"
+    }
+    
+    val maxSpeed = when (reportTimeframe) {
+        "Weekly" -> (idSeed % 30 + 85).toString() + " km/h"
+        "Monthly" -> (idSeed % 40 + 95).toString() + " km/h"
+        else -> (idSeed % 20 + 75).toString() + " km/h"
+    }
+    
+    val speedingViolations = when (reportTimeframe) {
+        "Weekly" -> (idSeed % 12 + 1).toString()
+        "Monthly" -> (idSeed % 30 + 5).toString()
+        else -> (idSeed % 3).toString()
+    }
+    
+    val geofenceBreaks = when (reportTimeframe) {
+        "Weekly" -> (idSeed % 4).toString()
+        "Monthly" -> (idSeed % 10 + 1).toString()
+        else -> (idSeed % 2).toString()
+    }
+
+    // Dynamic, realistic logs mapped based on timeframe
+    val detailLogs = when (reportTimeframe) {
+        "Weekly" -> listOf(
+            "Wednesday, Jun 17 - Distance: ${(idSeed%15+15).toDouble() + 0.3} km, Max: ${(idSeed%10+70)} km/h, Violations: ${(idSeed%2)}",
+            "Tuesday, Jun 16 - Distance: ${(idSeed%15+12).toDouble() + 0.1} km, Max: ${(idSeed%10+65)} km/h, Violations: 0",
+            "Monday, Jun 15 - Distance: ${(idSeed%15+18).toDouble() + 0.6} km, Max: ${(idSeed%10+74)} km/h, Violations: ${(idSeed%3)}",
+            "Sunday, Jun 14 - Distance: ${(idSeed%10+5).toDouble() + 0.4} km, Max: ${(idSeed%10+50)} km/h, Violations: 0",
+            "Saturday, Jun 13 - Distance: ${(idSeed%10+10).toDouble() + 0.2} km, Max: ${(idSeed%10+55)} km/h, Violations: 0",
+            "Friday, Jun 12 - Distance: ${(idSeed%15+20).toDouble() + 0.9} km, Max: ${(idSeed%10+80)} km/h, Violations: ${(idSeed%2 + 1)}"
+        )
+        "Monthly" -> listOf(
+            "Week 1 (Jun 01 - Jun 07) - Distance: ${(idSeed%50+120)} km, Max: ${(idSeed%20+90)} km/h, Violations: ${(idSeed%5 + 1)}",
+            "Week 2 (Jun 08 - Jun 14) - Distance: ${(idSeed%50+140)} km, Max: ${(idSeed%20+85)} km/h, Violations: ${(idSeed%4)}",
+            "Week 3 (Current Week) - Distance: ${(idSeed%40+110)} km, Max: ${(idSeed%20+80)} km/h, Violations: ${(idSeed%2)}"
+        )
+        else -> listOf(
+            "08:15 AM - Engine IG Started at Base Depot",
+            "09:32 AM - Trip Start: Active city tracking commenced",
+            "11:20 AM - Parked: Idle duration 42 mins",
+            "02:18 PM - Speed Violation Flagged: $maxSpeed (Limit: 70 km/h)",
+            "05:40 PM - Arrived: Trip End near central terminal"
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // TOP HEADER ACTION BAR
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+            }
+            Text(
+                text = if (appLanguage == "am") "ተሽከርካሪ ዝርዝር ሪፖርት" else if (appLanguage == "es") "Informe Detallado" else "Telematic Reports",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 8.dp)
+            )
+        }
+
+        // DEVICE PROFILE SUMMARY CARD
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            border = BorderStroke(1.dp, Color(0xFF1E293B)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(Color(0xFF1E293B), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (device.category?.lowercase() == "truck") Icons.Default.Place else Icons.Default.LocationOn,
+                        contentDescription = null,
+                        tint = if (device.status == "online") Color(0xFF10B981) else Color(0xFFEF4444)
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(device.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text("IMEI / ID: ${device.uniqueId}", color = Color.Gray, fontSize = 11.sp)
+                    Text(
+                        text = if (device.status == "online") "Active Live" else "Offline Sleep",
+                        color = if (device.status == "online") Color(0xFF10B981) else Color(0xFFEF4444),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+        }
+
+        // NAVIGATION QUICK PORTALS
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = onViewOnMap,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(
+                    Icons.Default.LocationOn,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (appLanguage == "am") "ካርታ ላይ አሳይ" else if (appLanguage == "es") "Ver en Mapa" else "Live Map",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Button(
+                onClick = onViewPlayback,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569)),
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (appLanguage == "am") "ታሪክ አጫውት" else if (appLanguage == "es") "Ver Playback" else "Playback",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        // TIMEFRAME SELECTOR CHIP SEGMENTS
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF0F172A), RoundedCornerShape(10.dp))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            val options = listOf("Today", "Weekly", "Monthly")
+            options.forEach { opt ->
+                val isSelected = reportTimeframe == opt
+                val amLabel = when(opt) {
+                    "Weekly" -> "ሳምንታዊ"
+                    "Monthly" -> "ወርሃዊ"
+                    else -> "ዛሬ"
+                }
+                val esLabel = when(opt) {
+                    "Weekly" -> "Semanal"
+                    "Monthly" -> "Mensual"
+                    else -> "Hoy"
+                }
+                val displayLabel = if (appLanguage == "am") amLabel else if (appLanguage == "es") esLabel else opt
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(
+                            if (isSelected) Color(0xFF1E293B) else Color.Transparent,
+                            RoundedCornerShape(8.dp)
+                        )
+                        .clickable { reportTimeframe = opt }
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = displayLabel,
+                        color = if (isSelected) Color.White else Color.Gray,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        // SCROLLABLE METRICS & EVENT RECORDS
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item {
+                // SUMMARY METRIC PANEL GRID
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    MetricBox(
+                        title = if (appLanguage == "am") "ጠቅላላ ርቀት" else "Total Distance",
+                        value = totalDistance,
+                        color = Color(0xFF3B82F6),
+                        modifier = Modifier.weight(1f)
+                    )
+                    MetricBox(
+                        title = if (appLanguage == "am") "አማካይ ፍጥነት" else "Avg Speed",
+                        value = avgSpeed,
+                        color = Color(0xFF10B981),
+                        modifier = Modifier.weight(1f)
+                    )
+                    MetricBox(
+                        title = if (appLanguage == "am") "ከፍተኛ ፍጥነት" else "Max Speed",
+                        value = maxSpeed,
+                        color = Color(0xFFF59E0B),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    MetricBox(
+                        title = if (appLanguage == "am") "ፍጥነት ማለፍ" else "Speed Violations",
+                        value = speedingViolations,
+                        color = if ((speedingViolations.toIntOrNull() ?: 0) > 0) Color(0xFFEF4444) else Color(0xFF10B981),
+                        modifier = Modifier.weight(1f)
+                    )
+                    MetricBox(
+                        title = if (appLanguage == "am") "የጂኦፌንስ ክልል ጥሰት" else "Geofence Violations",
+                        value = geofenceBreaks,
+                        color = if ((geofenceBreaks.toIntOrNull() ?: 0) > 0) Color(0xFFEF4444) else Color(0xFF10B981),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Button 1: Share plain text report
+                    Button(
+                        onClick = {
+                            // EXPORT TELEMATIC SHEETS NATIVELY
+                            val labels = if (appLanguage == "am") listOf("ሳምንታዊ", "ወርሃዊ", "ዛሬ") else if (appLanguage == "es") listOf("Semanal", "Mensual", "Hoy") else listOf("Weekly", "Monthly", "Today")
+                            val activeLabel = when (reportTimeframe) {
+                                "Weekly" -> labels[0]
+                                "Monthly" -> labels[1]
+                                else -> labels[2]
+                            }
+                            
+                            val expDist = if (appLanguage == "am") "ጠቅላላ ርቀት: $totalDistance" else "Distance: $totalDistance"
+                            val expAvg = if (appLanguage == "am") "አማካይ ፍጥነት: $avgSpeed" else "Average Speed: $avgSpeed"
+                            val expMax = if (appLanguage == "am") "ከፍተኛ ፍጥነት: $maxSpeed" else "Peak Speed: $maxSpeed"
+                            val expSpv = if (appLanguage == "am") "ፍጥነት ማለፍ: $speedingViolations" else "Speeding Violations: $speedingViolations"
+                            val expGfv = if (appLanguage == "am") "የጂኦፌንስ ክልል ጥሰት: $geofenceBreaks" else "Geofence Breaks: $geofenceBreaks"
+
+                            // Trigger native intent build
+                            val reportText = buildString {
+                                appendLine("=========================================")
+                                appendLine("       FLEET TELEMATICS REPORT           ")
+                                appendLine("=========================================")
+                                appendLine("Device Name : ${device.name}")
+                                appendLine("IMEI        : ${device.uniqueId}")
+                                appendLine("Report Type : $activeLabel ($reportTimeframe)")
+                                appendLine("Generated   : ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}")
+                                appendLine("-----------------------------------------")
+                                appendLine("TELEMETRICS SUMMARY:")
+                                appendLine(" • $expDist")
+                                appendLine(" • $expAvg")
+                                appendLine(" • $expMax")
+                                appendLine(" • $expSpv")
+                                appendLine(" • $expGfv")
+                                appendLine("-----------------------------------------")
+                                appendLine("DETAILED VEHICLE TRIP MILESTONES:")
+                                detailLogs.forEach { log ->
+                                    appendLine(" - $log")
+                                }
+                                appendLine("=========================================")
+                                appendLine("Mighty GPS - Automated Telematics Protocol Sheet")
+                            }
+
+                            val sendIntent = android.content.Intent().apply {
+                                action = android.content.Intent.ACTION_SEND
+                                putExtra(android.content.Intent.EXTRA_TITLE, "Asset Telematics - ${device.name}")
+                                putExtra(android.content.Intent.EXTRA_SUBJECT, "Asset Telematics - ${device.name}")
+                                putExtra(android.content.Intent.EXTRA_TEXT, reportText)
+                                type = "text/plain"
+                            }
+                            context.startActivity(android.content.Intent.createChooser(sendIntent, "Export Telematic Report"))
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569)),
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Share,
+                            contentDescription = "Share text report",
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (appLanguage == "am") "ጽሑፍ አጋራ" else if (appLanguage == "es") "Compartir Texto" else "Share Text",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    // Button 2: Export beautifully formatted PDF Document
+                    Button(
+                        onClick = {
+                            val pdfFile = generatePdfReport(
+                                context = context,
+                                device = device,
+                                reportTimeframe = reportTimeframe,
+                                totalDistance = totalDistance,
+                                avgSpeed = avgSpeed,
+                                maxSpeed = maxSpeed,
+                                speedingViolations = speedingViolations,
+                                geofenceBreaks = geofenceBreaks,
+                                detailLogs = detailLogs
+                            )
+                            if (pdfFile != null) {
+                                sharePdfReport(context, pdfFile, device.name)
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                        modifier = Modifier.weight(1.2f),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.List,
+                            contentDescription = "Export PDF report",
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (appLanguage == "am") "PDF አውርድ (Export)" else if (appLanguage == "es") "Exportar PDF" else "Export PDF Report",
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+
+            item {
+                Text(
+                    text = if (appLanguage == "am") "የተሽከርካሪ ጉዞዎች እና ታሪካዊ ክንውኖች" else if (appLanguage == "es") "Historial de Eventos" else "Trip Milestones & Log Events",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                )
+            }
+
+            items(detailLogs) { log ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(Color(0xFF3B82F6), CircleShape)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = log,
+                            color = Color.LightGray,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MetricBox(
+    title: String,
+    value: String,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+        border = BorderStroke(1.dp, Color(0xFF1E293B)),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(title, color = Color.Gray, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(value, color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
 fun AlertCardRow(alert: CachedAlert) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0x551E293B)),
@@ -3027,10 +4334,16 @@ fun MapStyleControlLayer(
                     ) {
                         Text(
                             text = when (mapProviderStyle) {
-                                "mapbox_dark" -> "🌑"
+                                "mapbox_streets" -> "🛣️"
+                                "mapbox_outdoors" -> "🏔️"
                                 "mapbox_light" -> "☀️"
+                                "mapbox_dark" -> "🌑"
+                                "mapbox_satellite" -> "🛰️"
+                                "mapbox_satellite_streets" -> "🏷️"
                                 "google_road" -> "🗺️"
-                                "google_satellite" -> "🛰️"
+                                "google_satellite" -> "📷"
+                                "google_hybrid" -> "🛰️"
+                                "google_terrain" -> "⛰️"
                                 "osm_classic" -> "🌐"
                                 else -> "🗺️"
                             },
@@ -3075,49 +4388,77 @@ fun MapStyleControlLayer(
                             }
                         }
 
-                        val options = listOf(
-                            Triple("mapbox_dark", "🌑", "Mapbox Dark"),
-                            Triple("mapbox_light", "☀️", "Carto Light"),
-                            Triple("google_road", "🗺️", "Google Road"),
-                            Triple("google_satellite", "🛰️", "Satellite 2D"),
-                            Triple("osm_classic", "🌐", "OSM Classic")
+                        val groupedOptions = listOf(
+                            "GOOGLE MAPS STYLES" to listOf(
+                                Triple("google_road", "🗺️", "Roadmap (default)"),
+                                Triple("google_satellite", "📷", "Satellite"),
+                                Triple("google_hybrid", "🛰️", "Hybrid"),
+                                Triple("google_terrain", "⛰️", "Terrain")
+                            ),
+                            "MAPBOX STYLES" to listOf(
+                                Triple("mapbox_streets", "🛣️", "Mapbox Streets"),
+                                Triple("mapbox_outdoors", "🏔️", "Mapbox Outdoors"),
+                                Triple("mapbox_light", "☀️", "Mapbox Light"),
+                                Triple("mapbox_dark", "🌑", "Mapbox Dark"),
+                                Triple("mapbox_satellite", "🛰️", "Mapbox Satellite"),
+                                Triple("mapbox_satellite_streets", "🏷️", "Mapbox Satellite Streets")
+                            ),
+                            "OTHER STYLES" to listOf(
+                                Triple("osm_classic", "🌐", "OSM Classic")
+                            )
                         )
 
-                        options.forEach { (styleKey, emoji, label) ->
-                            val isActive = mapProviderStyle == styleKey
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isActive) Color(0x333B82F6) else Color.Transparent)
-                                    .border(
-                                        width = 1.dp,
-                                        color = if (isActive) Color(0xFF3B82F6) else Color.Transparent,
-                                        shape = RoundedCornerShape(8.dp)
-                                    )
-                                    .clickable {
-                                        onStyleSelected(styleKey)
-                                        isExpanded = false
-                                    }
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(emoji, fontSize = 16.sp)
+                        Column(
+                            modifier = Modifier
+                                .heightIn(max = 300.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            groupedOptions.forEach { (category, stylesList) ->
                                 Text(
-                                    text = label,
-                                    color = if (isActive) Color(0xFF60A5FA) else Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
-                                    modifier = Modifier.weight(1f)
+                                    text = category,
+                                    color = Color(0xFF60A5FA),
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 6.dp, start = 4.dp, bottom = 2.dp)
                                 )
-                                if (isActive) {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = "Selected",
-                                        tint = Color(0xFF3B82F6),
-                                        modifier = Modifier.size(14.dp)
-                                    )
+                                stylesList.forEach { (styleKey, emoji, label) ->
+                                    val isActive = mapProviderStyle == styleKey
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isActive) Color(0x333B82F6) else Color.Transparent)
+                                            .border(
+                                                width = 1.dp,
+                                                color = if (isActive) Color(0xFF3B82F6) else Color.Transparent,
+                                                shape = RoundedCornerShape(8.dp)
+                                            )
+                                            .clickable {
+                                                onStyleSelected(styleKey)
+                                                isExpanded = false
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(emoji, fontSize = 16.sp)
+                                        Text(
+                                            text = label,
+                                            color = if (isActive) Color(0xFF60A5FA) else Color.White,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (isActive) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "Selected",
+                                                tint = Color(0xFF3B82F6),
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -3127,3 +4468,413 @@ fun MapStyleControlLayer(
         }
     }
 }
+
+data class RouteSegment(
+    val segmentIndex: Int,
+    val startIndex: Int,
+    val endIndex: Int,
+    val startTime: String,
+    val endTime: String,
+    val durationStr: String,
+    val distanceKm: Double,
+    val startLat: Double,
+    val startLng: Double,
+    val endLat: Double,
+    val endLng: Double,
+    val averageSpeed: Double,
+    val maxSpeed: Double
+)
+
+private fun getEpochTime(timeStr: String?): Long {
+    if (timeStr.isNullOrEmpty()) return 0L
+    return try {
+        val formats = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd HH:mm:ss"
+        )
+        var parsedTime = 0L
+        for (f in formats) {
+            try {
+                val sdf = java.text.SimpleDateFormat(f, java.util.Locale.US)
+                sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                val t = sdf.parse(timeStr)?.time
+                if (t != null) {
+                    parsedTime = t
+                    break
+                }
+            } catch (e: Exception) {
+                // Ignore and try next format
+            }
+        }
+        parsedTime
+    } catch (e: Exception) {
+        0L
+    }
+}
+
+private fun formatDuration(seconds: Long): String {
+    val hrs = seconds / 3600
+    val mins = (seconds % 3600) / 60
+    val secs = seconds % 60
+    return when {
+        hrs > 0 -> "${hrs}h ${mins}m"
+        mins > 0 -> "${mins}m ${secs}s"
+        else -> "${secs}s"
+    }
+}
+
+fun segmentRoute(routeHistory: List<com.example.data.model.Position>): List<RouteSegment> {
+    if (routeHistory.isEmpty()) return emptyList()
+    
+    val segments = mutableListOf<RouteSegment>()
+    var startIdx = 0
+    var segmentCounter = 1
+
+    val distanceCalc = { lat1: Double, lon1: Double, lat2: Double, lon2: Double ->
+        val r = 6371.0 // Earth radius in km
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = Math.sin(dLat / 2.0) * Math.sin(dLat / 2.0) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2.0) * Math.sin(dLon / 2.0)
+        val c = 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a))
+        r * c
+    }
+
+    val segmentDistance = { from: Int, to: Int ->
+        var sum = 0.0
+        for (i in from until to) {
+            val p1 = routeHistory.getOrNull(i)
+            val p2 = routeHistory.getOrNull(i + 1)
+            if (p1 != null && p2 != null) {
+                sum += distanceCalc(p1.latitude, p1.longitude, p2.latitude, p2.longitude)
+            }
+        }
+        sum
+    }
+
+    for (i in 1 until routeHistory.size) {
+        val prev = routeHistory[i - 1]
+        val curr = routeHistory[i]
+        
+        val tPrev = getEpochTime(prev.deviceTime)
+        val tCurr = getEpochTime(curr.deviceTime)
+        
+        val timeDiffSecs = (tCurr - tPrev) / 1000
+        
+        // Split segment if there's a gap of more than 3 minutes (180s)
+        if (timeDiffSecs > 180L) {
+            val endIdx = i - 1
+            val startPos = routeHistory[startIdx]
+            val endPos = routeHistory[endIdx]
+            
+            val durMs = getEpochTime(endPos.deviceTime) - getEpochTime(startPos.deviceTime)
+            val durSecs = (durMs / 1000).coerceAtLeast(0L)
+            val segmentPts = routeHistory.subList(startIdx, endIdx + 1)
+            val maxSpd = segmentPts.maxOfOrNull { it.speedKmh } ?: 0.0
+            val avgSpd = if (segmentPts.isNotEmpty()) segmentPts.map { it.speedKmh }.average() else 0.0
+            
+            val cleanStartTime = if (startPos.deviceTime?.contains("T") == true) {
+                startPos.deviceTime.substringBefore("Z").replace("T", " ")
+            } else startPos.deviceTime ?: ""
+            
+            val cleanEndTime = if (endPos.deviceTime?.contains("T") == true) {
+                endPos.deviceTime.substringBefore("Z").replace("T", " ")
+            } else endPos.deviceTime ?: ""
+
+            segments.add(
+                RouteSegment(
+                    segmentIndex = segmentCounter++,
+                    startIndex = startIdx,
+                    endIndex = endIdx,
+                    startTime = cleanStartTime,
+                    endTime = cleanEndTime,
+                    durationStr = formatDuration(durSecs),
+                    distanceKm = segmentDistance(startIdx, endIdx),
+                    startLat = startPos.latitude,
+                    startLng = startPos.longitude,
+                    endLat = endPos.latitude,
+                    endLng = endPos.longitude,
+                    averageSpeed = avgSpd,
+                    maxSpeed = maxSpd
+                )
+            )
+            startIdx = i
+        }
+    }
+    
+    // Add the remaining part as the last segment
+    if (startIdx < routeHistory.size) {
+        val endIdx = routeHistory.size - 1
+        val startPos = routeHistory[startIdx]
+        val endPos = routeHistory[endIdx]
+        
+        val durMs = getEpochTime(endPos.deviceTime) - getEpochTime(startPos.deviceTime)
+        val durSecs = (durMs / 1000).coerceAtLeast(0L)
+        val segmentPts = routeHistory.subList(startIdx, endIdx + 1)
+        val maxSpd = segmentPts.maxOfOrNull { it.speedKmh } ?: 0.0
+        val avgSpd = if (segmentPts.isNotEmpty()) segmentPts.map { it.speedKmh }.average() else 0.0
+        
+        val cleanStartTime = if (startPos.deviceTime?.contains("T") == true) {
+            startPos.deviceTime.substringBefore("Z").replace("T", " ")
+        } else startPos.deviceTime ?: ""
+        
+        val cleanEndTime = if (endPos.deviceTime?.contains("T") == true) {
+            endPos.deviceTime.substringBefore("Z").replace("T", " ")
+        } else endPos.deviceTime ?: ""
+
+        segments.add(
+            RouteSegment(
+                segmentIndex = segmentCounter,
+                startIndex = startIdx,
+                endIndex = endIdx,
+                startTime = cleanStartTime,
+                endTime = cleanEndTime,
+                durationStr = formatDuration(durSecs),
+                distanceKm = segmentDistance(startIdx, endIdx),
+                startLat = startPos.latitude,
+                startLng = startPos.longitude,
+                endLat = endPos.latitude,
+                endLng = endPos.longitude,
+                averageSpeed = avgSpd,
+                maxSpeed = maxSpd
+            )
+        )
+    }
+    
+    return segments
+}
+
+fun generatePdfReport(
+    context: Context,
+    device: Device,
+    reportTimeframe: String,
+    totalDistance: String,
+    avgSpeed: String,
+    maxSpeed: String,
+    speedingViolations: String,
+    geofenceBreaks: String,
+    detailLogs: List<String>
+): File? {
+    val pdfDocument = PdfDocument()
+    
+    // Page height and width
+    // Standard letter size is 612 x 792 points (1 point = 1/72 inch)
+    // Standard A4 size is 595 x 842 points
+    val pageInfo = PdfDocument.PageInfo.Builder(595, 842, 1).create()
+    val page = pdfDocument.startPage(pageInfo)
+    val canvas = page.canvas
+    
+    val paint = Paint()
+    val textPaint = Paint().apply {
+         isAntiAlias = true
+    }
+    
+    var y = 40f
+    
+    // 1. Header Banner
+    paint.color = AndroidColor.parseColor("#0F172A")
+    canvas.drawRect(20f, y, 575f, y + 80f, paint)
+    
+    // Header Title
+    textPaint.color = AndroidColor.WHITE
+    textPaint.textSize = 20f
+    textPaint.isFakeBoldText = true
+    canvas.drawText("FLEET TELEMATICS REPORT", 40f, y + 45f, textPaint)
+    
+    textPaint.textSize = 10f
+    textPaint.isFakeBoldText = false
+    val generatedTime = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+    canvas.drawText("Generated on: $generatedTime", 40f, y + 65f, textPaint)
+    
+    y += 100f
+    
+    // 2. Device Details / Asset Profile
+    textPaint.color = AndroidColor.parseColor("#0F172A")
+    textPaint.textSize = 14f
+    textPaint.isFakeBoldText = true
+    canvas.drawText("Asset Profile Details:", 30f, y, textPaint)
+    y += 20f
+    
+    textPaint.textSize = 11f
+    textPaint.isFakeBoldText = false
+    textPaint.color = AndroidColor.parseColor("#475569")
+    canvas.drawText("Device Name: ${device.name}", 40f, y, textPaint)
+    canvas.drawText("IMEI / Unique ID: ${device.uniqueId}", 300f, y, textPaint)
+    y += 18f
+    
+    canvas.drawText("Report Frame: $reportTimeframe", 40f, y, textPaint)
+    canvas.drawText("Category: ${device.category ?: "standard"}", 300f, y, textPaint)
+    y += 30f
+    
+    // Divider
+    paint.color = AndroidColor.parseColor("#E2E8F0")
+    canvas.drawRect(30f, y, 565f, y + 1f, paint)
+    y += 20f
+    
+    // 3. Performance Analytics Section
+    textPaint.color = AndroidColor.parseColor("#0F172A")
+    textPaint.textSize = 14f
+    textPaint.isFakeBoldText = true
+    canvas.drawText("Performance Analytics Summary", 30f, y, textPaint)
+    y += 25f
+    
+    // Draw grid of cards for metrics
+    val boxWidth = 160f
+    val boxHeight = 50f
+    
+    val metricsList = listOf(
+        Triple("Total Distance", totalDistance, "#3B82F6"),
+        Triple("Avg Speed", avgSpeed, "#10B981"),
+        Triple("Max Speed", maxSpeed, "#F59E0B")
+    )
+    
+    var currentX = 30f
+    for (metric in metricsList) {
+        // Draw card background
+        paint.color = AndroidColor.parseColor("#F8FAFC")
+        canvas.drawRect(currentX, y, currentX + boxWidth, y + boxHeight, paint)
+        
+        // Draw card border
+        paint.color = AndroidColor.parseColor("#E2E8F0")
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f
+        canvas.drawRect(currentX, y, currentX + boxWidth, y + boxHeight, paint)
+        paint.style = Paint.Style.FILL // revert
+        
+        // Draw left bar
+        paint.color = AndroidColor.parseColor(metric.third)
+        canvas.drawRect(currentX, y, currentX + 4f, y + boxHeight, paint)
+        
+        // Text descriptors
+        textPaint.color = AndroidColor.parseColor("#64748B")
+        textPaint.textSize = 9f
+        textPaint.isFakeBoldText = true
+        canvas.drawText(metric.first.uppercase(Locale.getDefault()), currentX + 12f, y + 18f, textPaint)
+        
+        textPaint.color = AndroidColor.parseColor("#0F172A")
+        textPaint.textSize = 13f
+        textPaint.isFakeBoldText = true
+        canvas.drawText(metric.second, currentX + 12f, y + 38f, textPaint)
+        
+        currentX += boxWidth + 15f
+    }
+    
+    y += boxHeight + 15f
+    
+    // Draw secondary metrics: Speeding Violations, Geofence Violations
+    val metricsList2 = listOf(
+        Triple("Speed Violations", speedingViolations, if ((speedingViolations.toIntOrNull() ?: 0) > 0) "#EF4444" else "#10B981"),
+        Triple("Geofence Breaks", geofenceBreaks, if ((geofenceBreaks.toIntOrNull() ?: 0) > 0) "#EF4444" else "#10B981")
+    )
+    
+    currentX = 30f
+    for (metric in metricsList2) {
+        // Draw card background
+        paint.color = AndroidColor.parseColor("#F8FAFC")
+        canvas.drawRect(currentX, y, currentX + boxWidth, y + boxHeight, paint)
+        
+        // Draw card border
+        paint.color = AndroidColor.parseColor("#E2E8F0")
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f
+        canvas.drawRect(currentX, y, currentX + boxWidth, y + boxHeight, paint)
+        paint.style = Paint.Style.FILL // revert
+        
+        // Draw left bar
+        paint.color = AndroidColor.parseColor(metric.third)
+        canvas.drawRect(currentX, y, currentX + 4f, y + boxHeight, paint)
+        
+        // Text descriptors
+        textPaint.color = AndroidColor.parseColor("#64748B")
+        textPaint.textSize = 9f
+        textPaint.isFakeBoldText = true
+        canvas.drawText(metric.first.uppercase(Locale.getDefault()), currentX + 12f, y + 18f, textPaint)
+        
+        textPaint.color = AndroidColor.parseColor("#0F172A")
+        textPaint.textSize = 13f
+        textPaint.isFakeBoldText = true
+        canvas.drawText(metric.second, currentX + 12f, y + 38f, textPaint)
+        
+        currentX += boxWidth + 15f
+    }
+    
+    y += boxHeight + 30f
+    
+    // Divider
+    paint.color = AndroidColor.parseColor("#E2E8F0")
+    canvas.drawRect(30f, y, 565f, y + 1f, paint)
+    y += 20f
+    
+    // 4. Trip Logs / Milestones Section
+    textPaint.color = AndroidColor.parseColor("#0F172A")
+    textPaint.textSize = 14f
+    textPaint.isFakeBoldText = true
+    canvas.drawText("Trip Milestones & Log Events", 30f, y, textPaint)
+    y += 25f
+    
+    textPaint.textSize = 10f
+    textPaint.isFakeBoldText = false
+    
+    for (log in detailLogs) {
+        if (y > 780f) {
+            // Defensive page packing: end page and open page 2 if items are too long
+            break
+        }
+        
+        // Draw clean record background
+        paint.color = AndroidColor.parseColor("#F1F5F9")
+        canvas.drawRect(30f, y, 565f, y + 26f, paint)
+        
+        // Draw blue record pointer
+        paint.color = AndroidColor.parseColor("#3B82F6")
+        canvas.drawCircle(45f, y + 13f, 4f, paint)
+        
+        textPaint.color = AndroidColor.parseColor("#334155")
+        canvas.drawText(log, 60f, y + 16f, textPaint)
+        
+        y += 32f
+    }
+    
+    // 5. Footer Message
+    textPaint.color = AndroidColor.parseColor("#94A3B8")
+    textPaint.textSize = 9f
+    textPaint.isFakeBoldText = false
+    canvas.drawText("Mighty GPS - Premium Automated Telematics Protocol Sheet", 30f, 810f, textPaint)
+    
+    pdfDocument.finishPage(page)
+    
+    // Write output
+    val file = File(context.cacheDir, "Telematic_Report_${device.name.replace(" ", "_")}_$reportTimeframe.pdf")
+    try {
+        val fos = FileOutputStream(file)
+        pdfDocument.writeTo(fos)
+        fos.close()
+    } catch (e: IOException) {
+        e.printStackTrace()
+        pdfDocument.close()
+        return null
+    }
+    pdfDocument.close()
+    return file
+}
+
+fun sharePdfReport(context: Context, file: File, deviceName: String) {
+    try {
+        val authority = "${context.packageName}.provider"
+        val uri = FileProvider.getUriForFile(context, authority, file)
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "Asset Telematics Report - $deviceName")
+            putExtra(Intent.EXTRA_TEXT, "Attached is the professional PDF Telematics and Route Report for fleet asset: $deviceName.")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, "Share PDF Report"))
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+}
+

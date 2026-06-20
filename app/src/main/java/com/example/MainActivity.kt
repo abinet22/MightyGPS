@@ -44,7 +44,12 @@ class MainActivity : ComponentActivity() {
                         
                         composable("dashboard") {
                             DashboardScreen(
-                                viewModel = traccarViewModel
+                                viewModel = traccarViewModel,
+                                onLogout = {
+                                    navController.navigate("login") {
+                                        popUpTo("dashboard") { inclusive = true }
+                                    }
+                                }
                             )
                         }
                     }
