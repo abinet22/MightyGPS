@@ -43,8 +43,8 @@ fun LoginScreen(
 
     // Input States
     val serverUrl = "http://mighty-gps.pro.et/"
-    var email by remember { mutableStateOf("abinet22@gmail.com") }
-    var password by remember { mutableStateOf("admin") }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
     var isPasswordVisible by remember { mutableStateOf(false) }
 
     // Intercept login success
@@ -120,14 +120,7 @@ fun LoginScreen(
                 fontFamily = FontFamily.SansSerif
             )
             
-            Text(
-                text = "mighty-gps.pro.et",
-                color = Color(0xFF60A5FA),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = 4.dp, bottom = 32.dp)
-            )
+            Spacer(modifier = Modifier.height(32.dp))
 
             // Auth Error reporting banner
             if (authState is AuthUIState.Error) {
@@ -189,7 +182,7 @@ fun LoginScreen(
                 trailingIcon = {
                     IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
                         Icon(
-                            imageVector = if (isPasswordVisible) Icons.Default.FavoriteBorder else Icons.Default.Favorite,
+                            imageVector = if (isPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                             contentDescription = "Toggle password readability",
                             tint = Color.Gray
                         )
@@ -234,7 +227,7 @@ fun LoginScreen(
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = "LOGIN TO FLEET CONSOLE",
+                            text = "LOGIN",
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.sp
                         )

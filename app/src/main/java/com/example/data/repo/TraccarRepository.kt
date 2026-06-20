@@ -478,33 +478,6 @@ class TraccarRepository(private val context: Context) {
 
                 // Cache simulation data dynamically
                 updateDevicesDatabase(simulatedDevices, simulatedPositions)
-
-                // Periodically trigger a random, beautiful event alert log for presentation
-                counter++
-                if (counter % 5 == 0) {
-                    val alertDevId = listOf(1L, 2L, 4L).random()
-                    val devName = simulatedDevices.find { it.id == alertDevId }?.name ?: "Unknown Vehicle"
-                    val alarms = listOf("overspeed", "geofenceEnter", "geofenceExit", "sos", "powerRestored", "lowBattery")
-                    val chosenAlarm = alarms.random()
-                    
-                    val pos = simulatedPositions[alertDevId]
-                    val alert = CachedAlert(
-                        deviceId = alertDevId,
-                        deviceName = devName,
-                        type = "alarm",
-                        alarmType = chosenAlarm,
-                        latitude = pos?.latitude ?: 37.7749,
-                        longitude = pos?.longitude ?: -122.4194,
-                        message = when (chosenAlarm) {
-                            "overspeed" -> "Overspeed detected: ${String.format("%.1f", (pos?.speedKmh ?: 75.0))} km/h (Limit: 60 km/h)"
-                            "sos" -> "⚠️ Emergency SOS triggered by Driver!"
-                            "geofenceEnter" -> "Geofence Enclosed Region entered safely"
-                            "geofenceExit" -> "⚠️ Left authorized company depot boundary"
-                            else -> "Device report alert status generated"
-                        }
-                    )
-                    database.alertDao().insertAlert(alert)
-                }
             }
         }
     }
