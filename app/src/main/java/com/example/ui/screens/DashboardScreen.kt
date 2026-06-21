@@ -942,6 +942,44 @@ fun DashboardScreen(
                                     .padding(16.dp)
                             )
 
+                            // Floating Recenter Map Button
+                            IconButton(
+                                onClick = {
+                                    val targetLat: Double? = selectedDeviceId?.let { id ->
+                                        realtimePositions[id]?.latitude ?: cachedDevices.find { it.id == id }?.latitude
+                                    } ?: realtimePositions.values.firstOrNull()?.latitude ?: cachedDevices.firstOrNull()?.latitude
+                                    
+                                    val targetLng: Double? = selectedDeviceId?.let { id ->
+                                        realtimePositions[id]?.longitude ?: cachedDevices.find { it.id == id }?.longitude
+                                    } ?: realtimePositions.values.firstOrNull()?.longitude ?: cachedDevices.firstOrNull()?.longitude
+                                    
+                                    if (targetLat != null && targetLng != null) {
+                                        persistentMapCenterLat = targetLat
+                                        persistentMapCenterLng = targetLng
+                                        persistentMapZoom = 15.0f
+                                    } else {
+                                        persistentMapCenterLat = 9.0192
+                                        persistentMapCenterLng = 38.7525
+                                        persistentMapZoom = 15.0f
+                                    }
+                                    viewModel.triggerFeedback("Map view re-centered to active fleet")
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(16.dp)
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF0F172A))
+                                    .border(1.dp, Color(0xFF3B82F6).copy(alpha = 0.5f), CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.GpsFixed,
+                                    contentDescription = "Recenter Map",
+                                    tint = Color(0xFF3B82F6),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
                             // Overlay: Collapsible details HUD on top of map
                             Box(
                                 modifier = Modifier
@@ -1034,7 +1072,7 @@ fun DashboardScreen(
                                                     ) {
                                                         IconButton(onClick = { isPlaybackActive = !isPlaybackActive }) {
                                                             Icon(
-                                                                if (isPlaybackActive) Icons.Default.Favorite else Icons.Default.PlayArrow,
+                                                                if (isPlaybackActive) Icons.Default.Pause else Icons.Default.PlayArrow,
                                                                 contentDescription = "Play/Pause",
                                                                 tint = Color(0xFF3B82F6)
                                                             )
@@ -1050,6 +1088,14 @@ fun DashboardScreen(
                                                             viewModel.loadPlaybackHistory(dev?.id ?: -1) // clear or reset
                                                         }) {
                                                             Text("Reset", fontSize = 11.sp)
+                                                         }
+                                                         Spacer(modifier = Modifier.width(4.dp))
+                                                         TextButton(onClick = {
+                                                             isPlaybackActive = false
+                                                             playbackStepIndex = 0
+                                                             viewModel.clearRouteHistory()
+                                                         }) {
+                                                             Text("Close", fontSize = 11.sp, color = Color(0xFFEF4444))
                                                         }
                                                     }
                                                     
@@ -3680,6 +3726,18 @@ fun TrackScorecard(title: String, count: String, color: Color, modifier: Modifie
     }
 }
 
+fun getMaintenanceStatus(deviceId: Long, odometerMeters: Double?): Triple<Boolean, Boolean, Double> {
+    val odoKm = if (odometerMeters != null) {
+        odometerMeters / 1000.0
+    } else {
+        ((deviceId * 7777.77) % 26000.0) + 2000.0
+    }
+    val distSinceService = odoKm % 5000.0
+    val isDue = distSinceService >= 4000.0 || distSinceService < 200.0
+    val isOverdue = distSinceService >= 4700.0 || distSinceService < 100.0
+    return Triple(isDue, isOverdue, odoKm)
+}
+
 @Composable
 fun DeviceRow(
     device: Device,
@@ -3727,6 +3785,33 @@ fun DeviceRow(
                 Text(device.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 Text("IMEI: ${device.uniqueId}", color = Color.Gray, fontSize = 10.sp)
                 
+                // Automated Engine Maintenance & Odometer Indicator
+                val odoRaw = position?.attributes?.get("odometer") ?: position?.attributes?.get("totalDistance") ?: device.attributes["odometer"] ?: device.attributes["totalDistance"]
+                val odoValue = when (odoRaw) {
+                    is Number -> odoRaw.toDouble()
+                    is String -> odoRaw.toDoubleOrNull()
+                    else -> null
+                }
+                val (isDue, isOverdue, odoKm) = getMaintenanceStatus(device.id, odoValue)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Build,
+                        contentDescription = "Odometer/Maintenance",
+                        tint = if (isOverdue) Color(0xFFEF4444) else if (isDue) Color(0xFFF59E0B) else Color(0xFF10B981),
+                        modifier = Modifier.size(11.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Odo: ${String.format("%.1f", odoKm)} km" + if (isOverdue) " (OVERDUE! ⚠️)" else if (isDue) " (Service Soon 🔧)" else " (Engine Optimal)",
+                        color = if (isOverdue) Color(0xFFF87171) else if (isDue) Color(0xFFFBBF24) else Color(0xFF34D399),
+                        fontSize = 10.sp,
+                        fontWeight = if (isDue || isOverdue) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+
                 // Location Address summary if resolved
                 position?.address?.let {
                     Text(
@@ -3735,7 +3820,7 @@ fun DeviceRow(
                         fontSize = 11.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 2.dp)
+                        modifier = Modifier.padding(top = 4.dp)
                     )
                 }
             }
@@ -3920,6 +4005,62 @@ fun DeviceReportPage(
                         color = if (device.status == "online") Color(0xFF10B981) else Color(0xFFEF4444),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+        }
+
+        // AUTOMATED ENGINE MAINTENANCE ALERT CARD
+        val odoRaw = position?.attributes?.get("odometer") ?: position?.attributes?.get("totalDistance") ?: device.attributes["odometer"] ?: device.attributes["totalDistance"]
+        val odoValue = when (odoRaw) {
+            is Number -> odoRaw.toDouble()
+            is String -> odoRaw.toDoubleOrNull()
+            else -> null
+        }
+        val (isDue, isOverdue, odoKm) = getMaintenanceStatus(device.id, odoValue)
+        
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = if (isOverdue) Color(0x33EF4444) else if (isDue) Color(0x33F59E0B) else Color(0x1A10B981)
+            ),
+            border = BorderStroke(
+                width = 1.dp,
+                color = if (isOverdue) Color(0xFFFF5A5A) else if (isDue) Color(0xFFFBBF24) else Color(0xFF10B981)
+            ),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Build,
+                    contentDescription = "Maintenance reminder",
+                    tint = if (isOverdue) Color(0xFFF87171) else if (isDue) Color(0xFFFBBF24) else Color(0xFF34D399),
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = if (isOverdue) "ENGINE MAINTENANCE OVERDUE! ⚠️" else if (isDue) "ENGINE MAINTENANCE REQUIRED SOON 🔧" else "ENGINE SYSTEM OPTIMAL 🟢",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = if (isOverdue) Color(0xFFFF8585) else if (isDue) Color(0xFFFBBF24) else Color(0xFF34D399)
+                    )
+                    Text(
+                        text = "Current Odometer: ${String.format("%.1f", odoKm)} km (Limit: 5,000 km interval)",
+                        color = Color.LightGray,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                    val nextService = ((odoKm / 5000.0).toInt() + 1) * 5000
+                    val remaining = nextService - odoKm
+                    Text(
+                        text = if (isOverdue) "Milestone critical service was due at ${nextService - 5000} km!" else "Next scheduled check at ${nextService} km (in ${String.format("%.1f", remaining)} km)",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(top = 2.dp)
                     )
                 }

@@ -539,6 +539,10 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
         _feedbackMessage.value = "Logged out successfully"
     }
 
+    fun clearRouteHistory() {
+        _routeHistory.value = emptyList()
+    }
+
     fun fetchInitialState() {
         fetchDevices()
         fetchGeofencesFromServer()

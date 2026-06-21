@@ -61,6 +61,17 @@ data class MapMarker(
     val accuracy: Double = 0.0
 )
 
+/**
+ * Data model for clustering map markers
+ */
+data class MapCluster(
+    val id: Long,
+    val centerLat: Double,
+    val centerLng: Double,
+    val markers: List<MapMarker>,
+    val isCluster: Boolean
+)
+
 private fun formatLastUpdate(rawTime: String?): String {
     if (rawTime.isNullOrBlank()) return "Just now"
     return try {
@@ -79,6 +90,46 @@ private fun formatLastUpdate(rawTime: String?): String {
     } catch (e: Exception) {
         rawTime.replace("T", " ").replace("Z", "")
     }
+}
+
+private const val tileSize = 256
+
+// Convert coordinates to tile pixel positions
+fun getPixelCoords(lat: Double, lng: Double, z: Int): Pair<Double, Double> {
+    val totalTiles = (1 shl z).toDouble()
+    val totalPixels = totalTiles * tileSize
+    val x = (lng + 180.0) / 360.0 * totalPixels
+    val latRad = Math.toRadians(lat)
+    val y = (1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * totalPixels
+    return Pair(x, y)
+}
+
+fun getPixelCoordsCont(lat: Double, lng: Double, z: Double): Pair<Double, Double> {
+    val totalPixels = 2.0.pow(z) * tileSize
+    val x = (lng + 180.0) / 360.0 * totalPixels
+    val latRad = Math.toRadians(lat)
+    val y = (1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * totalPixels
+    return Pair(x, y)
+}
+
+// Convert a pixel offset back to coordinates (for clicks/gestures if needed)
+fun getCoordsFromPixels(px: Double, py: Double, z: Int): Pair<Double, Double> {
+    val totalTiles = (1 shl z).toDouble()
+    val totalPixels = totalTiles * tileSize
+    val lng = px / totalPixels * 360.0 - 180.0
+    val valY = (py / totalPixels) * 2.0 - 1.0
+    val latRad = atan(sinh(PI * (1.0 - valY)))
+    val lat = Math.toDegrees(latRad)
+    return Pair(lat, lng)
+}
+
+fun getCoordsFromPixelsCont(px: Double, py: Double, z: Double): Pair<Double, Double> {
+    val totalPixels = 2.0.pow(z) * tileSize
+    val lng = px / totalPixels * 360.0 - 180.0
+    val valY = (py / totalPixels) * 2.0 - 1.0
+    val latRad = atan(sinh(PI * (1.0 - valY)))
+    val lat = Math.toDegrees(latRad)
+    return Pair(lat, lng)
 }
 
 @Composable
@@ -147,9 +198,99 @@ fun SlippyMap(
     val currentDrawnPoints by rememberUpdatedState(drawnPoints)
     val currentDrawnCircleCenter by rememberUpdatedState(drawnCircleCenter)
 
+    // Cluster calculation on markers list
+    val clusteredMarkers = remember(markers, zoom) {
+        if (zoom > 13.5f) {
+            markers.map {
+                MapCluster(
+                    id = it.id,
+                    centerLat = it.latitude,
+                    centerLng = it.longitude,
+                    markers = listOf(it),
+                    isCluster = false
+                )
+            }
+        } else {
+            val result = mutableListOf<MapCluster>()
+            val visited = BooleanArray(markers.size)
+            val clusterThresholdPx = 100.0 // About 100 pixels threshold for grouping close markers
+            
+            for (i in markers.indices) {
+                if (visited[i]) continue
+                val m1 = markers[i]
+                visited[i] = true
+                
+                val clusterList = mutableListOf(m1)
+                val m1Coords = getPixelCoordsCont(m1.latitude, m1.longitude, zoom.toDouble())
+                
+                for (j in i + 1 until markers.size) {
+                    if (visited[j]) continue
+                    val m2 = markers[j]
+                    val m2Coords = getPixelCoordsCont(m2.latitude, m2.longitude, zoom.toDouble())
+                    
+                    val dx = m1Coords.first - m2Coords.first
+                    val dy = m1Coords.second - m2Coords.second
+                    val dist = sqrt(dx * dx + dy * dy)
+                    
+                    if (dist < clusterThresholdPx) {
+                        clusterList.add(m2)
+                        visited[j] = true
+                    }
+                }
+                
+                if (clusterList.size > 1) {
+                    val avgLat = clusterList.map { it.latitude }.average()
+                    val avgLng = clusterList.map { it.longitude }.average()
+                    result.add(
+                        MapCluster(
+                            id = -clusterList.first().id,
+                            centerLat = avgLat,
+                            centerLng = avgLng,
+                            markers = clusterList,
+                            isCluster = true
+                        )
+                    )
+                } else {
+                    result.add(
+                        MapCluster(
+                            id = m1.id,
+                            centerLat = m1.latitude,
+                            centerLng = m1.longitude,
+                            markers = listOf(m1),
+                            isCluster = false
+                        )
+                    )
+                }
+            }
+            result
+        }
+    }
+
+    // Tracking variables to distinguish self-reported camera updates from forced parent-initiated recentering
+    var lastReportedLat by remember { mutableStateOf<Double?>(null) }
+    var lastReportedLng by remember { mutableStateOf<Double?>(null) }
+    var lastReportedZoom by remember { mutableStateOf<Float?>(null) }
+
     // Report any viewport changes back to the parent to keep the map state synchronized during pan, zoom or fly-to.
     LaunchedEffect(centerLat, centerLng, zoom) {
+        lastReportedLat = centerLat
+        lastReportedLng = centerLng
+        lastReportedZoom = zoom
         onViewportChanged(centerLat, centerLng, zoom)
+    }
+
+    // Sync with externally modified initial position values (e.g., live tracking update or clicking recenter)
+    LaunchedEffect(initialCenterLat, initialCenterLng, initialZoom) {
+        val isSelfReported = lastReportedLat != null &&
+                abs(initialCenterLat - lastReportedLat!!) < 1e-6 &&
+                abs(initialCenterLng - lastReportedLng!!) < 1e-6 &&
+                abs(initialZoom - lastReportedZoom!!) < 0.01f
+        
+        if (!isSelfReported) {
+            centerLat = initialCenterLat
+            centerLng = initialCenterLng
+            zoom = initialZoom
+        }
     }
 
     // If marker is selected externally, fly/glide smoothly to it with maximum zoom!
@@ -179,9 +320,6 @@ fun SlippyMap(
         }
     }
 
-    // Dynamic scale helper
-    val tileSize = 256
-
     // Select tile URL based on chosen map style
     val tileUrlTemplate = when (mapStyle) {
         // Google Maps Styles
@@ -200,44 +338,6 @@ fun SlippyMap(
         
         "osm_classic" -> "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png"
         else -> "https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/256/{z}/{x}/{y}?access_token=pk.eyJ1IjoiYWJpbmV0MTIzIiwiYSI6ImNrbWR3d3Y5NzJwbG8ycGp4bGU1bXBtaGsifQ.LIZpH0mev90pUGXewX6lww" // default mapbox_streets fallback
-    }
-
-    // Convert coordinates to tile pixel positions
-    fun getPixelCoords(lat: Double, lng: Double, z: Int): Pair<Double, Double> {
-        val totalTiles = (1 shl z).toDouble()
-        val totalPixels = totalTiles * tileSize
-        val x = (lng + 180.0) / 360.0 * totalPixels
-        val latRad = Math.toRadians(lat)
-        val y = (1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * totalPixels
-        return Pair(x, y)
-    }
-
-    fun getPixelCoordsCont(lat: Double, lng: Double, z: Double): Pair<Double, Double> {
-        val totalPixels = 2.0.pow(z) * tileSize
-        val x = (lng + 180.0) / 360.0 * totalPixels
-        val latRad = Math.toRadians(lat)
-        val y = (1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * totalPixels
-        return Pair(x, y)
-    }
-
-    // Convert a pixel offset back to coordinates (for clicks/gestures if needed)
-    fun getCoordsFromPixels(px: Double, py: Double, z: Int): Pair<Double, Double> {
-        val totalTiles = (1 shl z).toDouble()
-        val totalPixels = totalTiles * tileSize
-        val lng = px / totalPixels * 360.0 - 180.0
-        val valY = (py / totalPixels) * 2.0 - 1.0
-        val latRad = atan(sinh(PI * (1.0 - valY)))
-        val lat = Math.toDegrees(latRad)
-        return Pair(lat, lng)
-    }
-
-    fun getCoordsFromPixelsCont(px: Double, py: Double, z: Double): Pair<Double, Double> {
-        val totalPixels = 2.0.pow(z) * tileSize
-        val lng = px / totalPixels * 360.0 - 180.0
-        val valY = (py / totalPixels) * 2.0 - 1.0
-        val latRad = atan(sinh(PI * (1.0 - valY)))
-        val lat = Math.toDegrees(latRad)
-        return Pair(lat, lng)
     }
 
     BoxWithConstraints(
@@ -390,11 +490,11 @@ fun SlippyMap(
                                     }
                                 }
                             } else {
-                                var clickedId: Long? = null
+                                var clickedCluster: MapCluster? = null
                                 var minDistance = 120f // Tap tolerance in pixels
                                 
-                                currentMarkers.forEach { m ->
-                                    val (px, py) = getPixelCoords(m.latitude, m.longitude, currentZoomInt)
+                                clusteredMarkers.forEach { c ->
+                                    val (px, py) = getPixelCoords(c.centerLat, c.centerLng, currentZoomInt)
                                     val dx = (px - centerXPixel) * subScale
                                     val dy = (py - centerYPixel) * subScale
                                     val screenX = (width / 2 + dx).toFloat()
@@ -403,12 +503,23 @@ fun SlippyMap(
                                     val dist = sqrt((screenX - tapX).pow(2) + (screenY - tapY).pow(2))
                                     if (dist < minDistance) {
                                         minDistance = dist
-                                        clickedId = m.id
+                                        clickedCluster = c
                                     }
                                 }
                                 
-                                if (clickedId != null) {
-                                    onMarkerClick(clickedId!!)
+                                if (clickedCluster != null) {
+                                    if (clickedCluster!!.isCluster) {
+                                        // Zoom in on cluster center
+                                        val targetLat = clickedCluster!!.centerLat
+                                        val targetLng = clickedCluster!!.centerLng
+                                        val targetZoom = (zoom + 2.5f).coerceAtMost(21.0f)
+                                        
+                                        centerLat = targetLat
+                                        centerLng = targetLng
+                                        zoom = targetZoom
+                                    } else {
+                                        onMarkerClick(clickedCluster!!.markers.first().id)
+                                    }
                                 } else {
                                     // Tap on map background deselects / closes popup
                                     onMarkerClick(-1L)
@@ -637,130 +748,213 @@ fun SlippyMap(
                     }
                 }
 
-                // B. Draw Active Vehicle Markers
-                markers.forEach { m ->
-                    val screenOffset = geoToScreen(m.latitude, m.longitude)
+                // B. Draw Active Vehicle Markers & Clusters
+                clusteredMarkers.forEach { c ->
+                    val screenOffset = geoToScreen(c.centerLat, c.centerLng)
                     
-                    // Draw accuracy/geofence halo
-                    drawCircle(
-                        color = if (m.status == "online") Color(0x2210B981) else Color(0x22EF4444),
-                        radius = 35f,
-                        center = screenOffset
-                    )
-
-                    // Outer border ring (shows selection or status)
-                    drawCircle(
-                        color = if (m.id == selectedMarkerId) {
-                            Color(0xFF3B82F6) // Active Selection Blue
-                        } else {
-                            when (m.status) {
-                                "online" -> Color(0xFF10B981) // Green
-                                "offline" -> Color(0xFF6B7280) // Gray
-                                else -> Color(0xFFF59E0B) // Amber
-                            }
-                        },
-                        radius = 20f,
-                        center = screenOffset
-                    )
-
-                    // Inner background circle
-                    drawCircle(
-                        color = Color.White,
-                        radius = 16f,
-                        center = screenOffset
-                    )
-
-                    // Status indicator fill or Custom Icon
-                    if (markerIconStyle == "custom" && customBitmap != null) {
-                        drawImage(
-                            image = customBitmap,
-                            dstOffset = IntOffset((screenOffset.x - 12).toInt(), (screenOffset.y - 12).toInt()),
-                            dstSize = IntSize(24, 24)
+                    if (c.isCluster) {
+                        // Draw a Beautiful, Rich Fleet Cluster Bubble with a pulsing halo
+                        val size = c.markers.size
+                        
+                        // 1. Double Outer Glowing Ring
+                        drawCircle(
+                            color = Color(0xFF3B82F6).copy(alpha = 0.15f),
+                            radius = 42f,
+                            center = screenOffset
                         )
-                    } else {
-                        val iconEmoji = when (markerIconStyle) {
-                            "car" -> "🚗"
-                            "truck" -> "🚛"
-                            "bike" -> "🏍️"
-                            "pin" -> "📍"
-                            else -> "🚗"
-                        }
-                        val emojiPaint = android.graphics.Paint().apply {
-                            textSize = 21f
+                        drawCircle(
+                            color = Color(0xFF3B82F6).copy(alpha = 0.25f),
+                            radius = 32f,
+                            center = screenOffset
+                        )
+                        
+                        // 2. High-contrast Solid Outer Ring
+                        drawCircle(
+                            color = Color(0xFF1E293B), // Slate Grey
+                            radius = 24f,
+                            center = screenOffset
+                        )
+                        
+                        // 3. Thick Blue/Primary Circle Center
+                        drawCircle(
+                            color = Color(0xFF3B82F6), // Vibrant M3 Blue
+                            radius = 20f,
+                            center = screenOffset
+                        )
+                        
+                        // 4. White Count Label Text in the middle
+                        val countPaint = android.graphics.Paint().apply {
+                            color = android.graphics.Color.WHITE
+                            textSize = 24f
+                            isAntiAlias = true
                             textAlign = android.graphics.Paint.Align.CENTER
+                            typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
                         }
                         drawContext.canvas.nativeCanvas.drawText(
-                            iconEmoji,
+                            size.toString(),
                             screenOffset.x,
-                            screenOffset.y + 7f,
-                            emojiPaint
+                            screenOffset.y + 8f,
+                            countPaint
+                        )
+                        
+                        // 5. Mini Label "FLEET CLUSTER"
+                        val miniPaint = android.graphics.Paint().apply {
+                            color = android.graphics.Color.argb(220, 59, 130, 246)
+                            textSize = 18f
+                            isAntiAlias = true
+                            textAlign = android.graphics.Paint.Align.CENTER
+                            typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
+                        }
+                        
+                        // Small label backdrop bubble
+                        val bgPaint = android.graphics.Paint().apply {
+                            color = if (isDarkMode) android.graphics.Color.argb(200, 15, 23, 42) else android.graphics.Color.argb(200, 255, 255, 255)
+                            style = android.graphics.Paint.Style.FILL
+                        }
+                        
+                        val clusterLabel = "$size Vehicles"
+                        val rect = android.graphics.Rect()
+                        miniPaint.getTextBounds(clusterLabel, 0, clusterLabel.length, rect)
+                        
+                        val bubbleLeft = screenOffset.x - rect.width() / 2 - 8
+                        val bubbleTop = screenOffset.y - 40 - rect.height() - 4
+                        val bubbleRight = screenOffset.x + rect.width() / 2 + 8
+                        val bubbleBottom = screenOffset.y - 40 + 4
+                        
+                        drawContext.canvas.nativeCanvas.drawRoundRect(
+                            bubbleLeft, bubbleTop, bubbleRight, bubbleBottom, 8f, 8f, bgPaint
+                        )
+                        
+                        drawContext.canvas.nativeCanvas.drawText(
+                            clusterLabel,
+                            screenOffset.x,
+                            screenOffset.y - 40,
+                            miniPaint
+                        )
+                    } else {
+                        val m = c.markers.first()
+                        
+                        // Draw accuracy/geofence halo
+                        drawCircle(
+                            color = if (m.status == "online") Color(0x2210B981) else Color(0x22EF4444),
+                            radius = 35f,
+                            center = screenOffset
+                        )
+
+                        // Outer border ring (shows selection or status)
+                        drawCircle(
+                            color = if (m.id == selectedMarkerId) {
+                                Color(0xFF3B82F6) // Active Selection Blue
+                            } else {
+                                when (m.status) {
+                                    "online" -> Color(0xFF10B981) // Green
+                                    "offline" -> Color(0xFF6B7280) // Gray
+                                    else -> Color(0xFFF59E0B) // Amber
+                                }
+                            },
+                            radius = 20f,
+                            center = screenOffset
+                        )
+
+                        // Inner background circle
+                        drawCircle(
+                            color = Color.White,
+                            radius = 16f,
+                            center = screenOffset
+                        )
+
+                        // Status indicator fill or Custom Icon
+                        if (markerIconStyle == "custom" && customBitmap != null) {
+                            drawImage(
+                                image = customBitmap,
+                                dstOffset = IntOffset((screenOffset.x - 12).toInt(), (screenOffset.y - 12).toInt()),
+                                dstSize = IntSize(24, 24)
+                            )
+                        } else {
+                            val iconEmoji = when (markerIconStyle) {
+                                "car" -> "🚗"
+                                "truck" -> "🚛"
+                                "bike" -> "🏍️"
+                                "pin" -> "📍"
+                                else -> "🚗"
+                            }
+                            val emojiPaint = android.graphics.Paint().apply {
+                                textSize = 21f
+                                textAlign = android.graphics.Paint.Align.CENTER
+                            }
+                            drawContext.canvas.nativeCanvas.drawText(
+                                iconEmoji,
+                                screenOffset.x,
+                                screenOffset.y + 7f,
+                                emojiPaint
+                            )
+                        }
+
+                        // Draw speed indicator arrowhead pointing custom course direction
+                        val radians = Math.toRadians((m.course - 90.0)).toFloat()
+                        val arrowLen = 14f
+                        val tipX = screenOffset.x + arrowLen * cos(radians)
+                        val tipY = screenOffset.y + arrowLen * sin(radians)
+                        
+                        // Arrow tail base left and right
+                        val leftRad = Math.toRadians((m.course + 135.0).toDouble()).toFloat()
+                        val rightRad = Math.toRadians((m.course - 135.0).toDouble()).toFloat()
+                        
+                        val lx = screenOffset.x + 8f * cos(leftRad)
+                        val ly = screenOffset.y + 8f * sin(leftRad)
+                        val rx = screenOffset.x + 8f * cos(rightRad)
+                        val ry = screenOffset.y + 8f * sin(rightRad)
+
+                        val arrowPath = Path().apply {
+                            moveTo(tipX, tipY)
+                            lineTo(lx, ly)
+                            lineTo(rx, ry)
+                            close()
+                        }
+                        drawPath(path = arrowPath, color = Color.White)
+
+                        // Label Text - Draw vehicle name badge above the vehicle
+                        val textPaint = android.graphics.Paint().apply {
+                            color = if (isDarkMode) android.graphics.Color.WHITE else android.graphics.Color.DKGRAY
+                            textSize = 30f
+                            isAntiAlias = true
+                            textAlign = android.graphics.Paint.Align.CENTER
+                            typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
+                        }
+
+                        // Render background bubble for name badge
+                        val labelText = when (markerLabelType) {
+                            "coordinates" -> String.format("%.5f, %.5f", m.latitude, m.longitude)
+                            "plate" -> "ET 3-" + (10000 + m.id % 90000) + " AA"
+                            else -> m.name
+                        }
+                        val rect = android.graphics.Rect()
+                        textPaint.getTextBounds(labelText, 0, labelText.length, rect)
+                        
+                        val bgPaint = android.graphics.Paint().apply {
+                            color = if (isDarkMode) android.graphics.Color.argb(200, 15, 23, 42) else android.graphics.Color.argb(200, 255, 255, 255)
+                            style = android.graphics.Paint.Style.FILL
+                        }
+
+                        // Bubble padding bounds
+                        val padX = 12
+                        val padY = 8
+                        val bubbleLeft = screenOffset.x - rect.width() / 2 - padX
+                        val bubbleTop = screenOffset.y - 45 - rect.height() - padY
+                        val bubbleRight = screenOffset.x + rect.width() / 2 + padX
+                        val bubbleBottom = screenOffset.y - 45 + padY
+
+                        drawContext.canvas.nativeCanvas.drawRoundRect(
+                            bubbleLeft, bubbleTop, bubbleRight, bubbleBottom, 12f, 12f, bgPaint
+                        )
+                        
+                        drawContext.canvas.nativeCanvas.drawText(
+                            labelText,
+                            screenOffset.x,
+                            screenOffset.y - 45,
+                            textPaint
                         )
                     }
-
-                    // Draw speed indicator arrowhead pointing custom course direction
-                    val radians = Math.toRadians((m.course - 90.0)).toFloat()
-                    val arrowLen = 14f
-                    val tipX = screenOffset.x + arrowLen * cos(radians)
-                    val tipY = screenOffset.y + arrowLen * sin(radians)
-                    
-                    // Arrow tail base left and right
-                    val leftRad = Math.toRadians((m.course + 135.0).toDouble()).toFloat()
-                    val rightRad = Math.toRadians((m.course - 135.0).toDouble()).toFloat()
-                    
-                    val lx = screenOffset.x + 8f * cos(leftRad)
-                    val ly = screenOffset.y + 8f * sin(leftRad)
-                    val rx = screenOffset.x + 8f * cos(rightRad)
-                    val ry = screenOffset.y + 8f * sin(rightRad)
-
-                    val arrowPath = Path().apply {
-                        moveTo(tipX, tipY)
-                        lineTo(lx, ly)
-                        lineTo(rx, ry)
-                        close()
-                    }
-                    drawPath(path = arrowPath, color = Color.White)
-
-                    // Label Text - Draw vehicle name badge above the vehicle
-                    val textPaint = android.graphics.Paint().apply {
-                        color = if (isDarkMode) android.graphics.Color.WHITE else android.graphics.Color.DKGRAY
-                        textSize = 30f
-                        isAntiAlias = true
-                        textAlign = android.graphics.Paint.Align.CENTER
-                        typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
-                    }
-
-                    // Render background bubble for name badge
-                    val labelText = when (markerLabelType) {
-                        "coordinates" -> String.format("%.5f, %.5f", m.latitude, m.longitude)
-                        "plate" -> "ET 3-" + (10000 + m.id % 90000) + " AA"
-                        else -> m.name
-                    }
-                    val rect = android.graphics.Rect()
-                    textPaint.getTextBounds(labelText, 0, labelText.length, rect)
-                    
-                    val bgPaint = android.graphics.Paint().apply {
-                        color = if (isDarkMode) android.graphics.Color.argb(200, 15, 23, 42) else android.graphics.Color.argb(200, 255, 255, 255)
-                        style = android.graphics.Paint.Style.FILL
-                    }
-
-                    // Bubble padding bounds
-                    val padX = 12
-                    val padY = 8
-                    val bubbleLeft = screenOffset.x - rect.width() / 2 - padX
-                    val bubbleTop = screenOffset.y - 45 - rect.height() - padY
-                    val bubbleRight = screenOffset.x + rect.width() / 2 + padX
-                    val bubbleBottom = screenOffset.y - 45 + padY
-
-                    drawContext.canvas.nativeCanvas.drawRoundRect(
-                        bubbleLeft, bubbleTop, bubbleRight, bubbleBottom, 12f, 12f, bgPaint
-                    )
-                    
-                    drawContext.canvas.nativeCanvas.drawText(
-                        labelText,
-                        screenOffset.x,
-                        screenOffset.y - 45,
-                        textPaint
-                    )
                 }
             }
 

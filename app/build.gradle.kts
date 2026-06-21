@@ -11,11 +11,11 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.vtxinnvations.mightygps"
+    applicationId = "com.aistudio.saasgpstracker.tzxuvy"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "0.0.3"
+    versionCode = 5
+    versionName = "5.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
