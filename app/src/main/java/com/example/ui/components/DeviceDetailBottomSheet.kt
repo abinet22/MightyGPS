@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.Device
 import com.example.data.model.Event
 import com.example.data.model.Position
+import com.example.util.UnitFormatter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -47,6 +48,7 @@ fun DeviceDetailBottomSheet(
     device: Device?,
     position: Position?,
     recentEvents: List<Event> = emptyList(),
+    unitSystem: String = "metric",
     onDismissRequest: () -> Unit,
     onPlaybackClick: (Long) -> Unit = {},
     onSendCommandClick: (Long) -> Unit = {},
@@ -73,6 +75,7 @@ fun DeviceDetailBottomSheet(
             device = device,
             position = position,
             recentEvents = recentEvents,
+            unitSystem = unitSystem,
             onDismiss = onDismissRequest,
             onPlaybackClick = { onPlaybackClick(device.id) },
             onSendCommandClick = { onSendCommandClick(device.id) },
@@ -118,6 +121,7 @@ fun DeviceDetailContent(
     device: Device,
     position: Position?,
     recentEvents: List<Event>,
+    unitSystem: String = "metric",
     onDismiss: () -> Unit,
     onPlaybackClick: () -> Unit,
     onSendCommandClick: () -> Unit,
@@ -270,6 +274,7 @@ fun DeviceDetailContent(
                 0 -> VehicleTabContent(
                     device = device,
                     position = position,
+                    unitSystem = unitSystem,
                     onPlaybackClick = onPlaybackClick,
                     onSendCommandClick = onSendCommandClick,
                     onCenterMapClick = onCenterMapClick,
@@ -329,11 +334,13 @@ private fun TabButton(
 private fun VehicleTabContent(
     device: Device,
     position: Position?,
+    unitSystem: String = "metric",
     onPlaybackClick: () -> Unit,
     onSendCommandClick: () -> Unit,
     onCenterMapClick: () -> Unit,
     onShareLocation: () -> Unit
 ) {
+    val isMetric = unitSystem == "metric"
     val speedKmh = position?.speedKmh ?: (device.attributes["speed"] as? Number)?.toDouble() ?: 0.0
     val altitude = position?.altitude ?: 0.0
     val course = position?.course ?: 0.0
@@ -404,7 +411,7 @@ private fun VehicleTabContent(
             ) {
                 MetricCard(
                     title = "SPEED",
-                    value = "${String.format("%.1f", speedKmh)} km/h",
+                    value = UnitFormatter.speed(speedKmh, isMetric),
                     icon = Icons.Default.Speed,
                     valueColor = Color(0xFF10B981),
                     modifier = Modifier.weight(1f)
@@ -433,7 +440,7 @@ private fun VehicleTabContent(
             ) {
                 MetricCard(
                     title = "ALTITUDE",
-                    value = "${String.format("%.0f", altitude)} m",
+                    value = UnitFormatter.altitude(altitude, isMetric),
                     icon = Icons.Default.FilterHdr,
                     valueColor = Color.White,
                     modifier = Modifier.weight(1f)

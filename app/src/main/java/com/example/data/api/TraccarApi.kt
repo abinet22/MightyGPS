@@ -1,6 +1,7 @@
 package com.example.data.api
 
 import com.example.data.model.*
+import com.example.data.pref.SessionManager
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -141,7 +142,11 @@ interface TraccarApi {
 
 
     companion object {
-        fun create(baseUrl: String, credentialsProvider: () -> Pair<String, String>?): TraccarApi {
+        fun create(
+            baseUrl: String,
+            sessionManager: SessionManager? = null,
+            credentialsProvider: () -> Pair<String, String>?
+        ): TraccarApi {
             val normalizedUrl = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
             
             val loggingInterceptor = HttpLoggingInterceptor().apply {
@@ -155,22 +160,46 @@ interface TraccarApi {
                 .cookieJar(TraccarCookieJar)
                 .addInterceptor { chain ->
                     val original = chain.request()
-                    val builder = original.newBuilder()
-                    
-                    // Inject basic authentication headers on all API calls automatically
-                    val credentials = credentialsProvider()
-                    if (credentials != null) {
-                        val (email, password) = credentials
-                        val basicToken = okhttp3.Credentials.basic(email, password)
-                        builder.header("Authorization", basicToken)
+                    val hasCookie = TraccarCookieJar.loadForRequest(original.url).isNotEmpty()
+                    val builder = original.newBuilder().header("Accept", "application/json")
+                    if (!hasCookie) {
+                        credentialsProvider()?.let { (email, pass) ->
+                            builder.header("Authorization", okhttp3.Credentials.basic(email, pass))
+                        }
                     }
-                    
-                    // Add standard accept headers
-                    builder.header("Accept", "application/json")
-                    
                     chain.proceed(builder.build())
                 }
                 .addInterceptor(loggingInterceptor)
+
+            if (sessionManager != null) {
+                val reauthClient = OkHttpClient.Builder()
+                    .connectTimeout(10, TimeUnit.SECONDS)
+                    .readTimeout(10, TimeUnit.SECONDS)
+                    .cookieJar(TraccarCookieJar)
+                    .build()
+
+                clientBuilder.authenticator(
+                    TraccarAuthenticator(sessionManager) { email, pass ->
+                        try {
+                            val formBody = okhttp3.FormBody.Builder()
+                                .add("email", email)
+                                .add("password", pass)
+                                .build()
+                            val loginReq = okhttp3.Request.Builder()
+                                .url("${normalizedUrl}api/session")
+                                .post(formBody)
+                                .header("Accept", "application/json")
+                                .build()
+                            val resp = reauthClient.newCall(loginReq).execute()
+                            val isOk = resp.isSuccessful
+                            resp.close()
+                            isOk
+                        } catch (e: Exception) {
+                            false
+                        }
+                    }
+                )
+            }
 
             val moshi = com.squareup.moshi.Moshi.Builder()
                 .add(DeviceAdapter())

@@ -145,16 +145,20 @@ fun CommandsTab(
                             Text("Payload: ${log.payload}", color = Color.Gray, fontSize = 10.sp)
                             Text("Time: ${log.timestamp}", color = Color.DarkGray, fontSize = 9.sp)
                         }
+                        val (badgeBg, badgeText) = when (log.status) {
+                            "EXECUTED" -> Color(0x2210B981) to Color(0xFF10B981)
+                            "QUEUED", "ACKNOWLEDGED" -> Color(0x22F59E0B) to Color(0xFFF59E0B)
+                            "FAILED" -> Color(0x22EF4444) to Color(0xFFEF4444)
+                            else -> Color(0x223B82F6) to Color(0xFF3B82F6)
+                        }
                         Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (log.status == "EXECUTED") Color(0x2210B981) else Color(0x22F59E0B)
-                            )
+                            colors = CardDefaults.cardColors(containerColor = badgeBg)
                         ) {
                             Text(
                                 text = log.status,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = if (log.status == "EXECUTED") Color(0xFF10B981) else Color(0xFFF59E0B),
+                                color = badgeText,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }

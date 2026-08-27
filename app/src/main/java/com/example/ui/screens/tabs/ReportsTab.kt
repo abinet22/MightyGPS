@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.*
 import com.example.ui.screens.components.MetricBox
 import com.example.ui.viewmodel.TraccarViewModel
+import com.example.util.UnitFormatter
 import com.example.util.generatePdfReport
 import com.example.util.sharePdfReport
 import kotlinx.coroutines.launch
@@ -273,11 +274,13 @@ fun ReportsTab(
 
             Spacer(modifier = Modifier.height(10.dp))
 
+            val isMetric = viewModel.sessionManager.unitSystem == "metric"
+
             // KPI Metric Cards
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MetricBox(
                     title = "Distance",
-                    value = String.format(Locale.US, "%.1f km", totalDistKm),
+                    value = UnitFormatter.distance(totalDistKm, isMetric),
                     color = Color(0xFF3B82F6),
                     modifier = Modifier.weight(1f)
                 )
@@ -289,7 +292,7 @@ fun ReportsTab(
                 )
                 MetricBox(
                     title = "Avg Velocity",
-                    value = String.format(Locale.US, "%.1f km/h", avgSpd),
+                    value = UnitFormatter.speed(avgSpd, isMetric),
                     color = Color(0xFFF59E0B),
                     modifier = Modifier.weight(1f)
                 )
@@ -300,7 +303,7 @@ fun ReportsTab(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MetricBox(
                     title = "Peak Velocity",
-                    value = String.format(Locale.US, "%.1f km/h", maxSpd),
+                    value = UnitFormatter.speed(maxSpd, isMetric),
                     color = if (maxSpd > 80.0) Color(0xFFEF4444) else Color(0xFF10B981),
                     modifier = Modifier.weight(1f)
                 )
@@ -322,9 +325,9 @@ fun ReportsTab(
 
             // Action Buttons (Share & Export PDF)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                val formattedTotalDist = String.format(Locale.US, "%.1f km", totalDistKm)
-                val formattedAvgSpd = String.format(Locale.US, "%.1f km/h", avgSpd)
-                val formattedMaxSpd = String.format(Locale.US, "%.1f km/h", maxSpd)
+                val formattedTotalDist = UnitFormatter.distance(totalDistKm, isMetric)
+                val formattedAvgSpd = UnitFormatter.speed(avgSpd, isMetric)
+                val formattedMaxSpd = UnitFormatter.speed(maxSpd, isMetric)
 
                 Button(
                     onClick = {
@@ -349,7 +352,7 @@ fun ReportsTab(
                                 appendLine("TRIP BREAKDOWNS:")
                                 tripResults.forEachIndexed { i, trip ->
                                     appendLine(" Trip #${i + 1}: ${trip.startAddress ?: "Origin"} -> ${trip.endAddress ?: "Destination"}")
-                                    appendLine("   Duration: ${trip.durationFormatted} | Distance: ${String.format(Locale.US, "%.1f km", trip.distanceKm)} | Driver: ${trip.driverName ?: "N/A"}")
+                                    appendLine("   Duration: ${trip.durationFormatted} | Distance: ${UnitFormatter.distance(trip.distanceKm, isMetric)} | Driver: ${trip.driverName ?: "N/A"}")
                                 }
                             }
                             appendLine("=========================================")
@@ -375,9 +378,9 @@ fun ReportsTab(
                     onClick = {
                         if (currentDev != null) {
                             val detailLogStrings = if (tripResults.isNotEmpty()) {
-                                tripResults.map { "Trip: ${it.startAddress ?: "Depot"} -> ${it.endAddress ?: "Destination"} (${String.format(Locale.US, "%.1f km", it.distanceKm)}, ${it.durationFormatted})" }
+                                tripResults.map { "Trip: ${it.startAddress ?: "Depot"} -> ${it.endAddress ?: "Destination"} (${UnitFormatter.distance(it.distanceKm, isMetric)}, ${it.durationFormatted})" }
                             } else {
-                                routeResults.take(15).map { "${it.deviceTime}: ${String.format(Locale.US, "%.1f km/h", it.speedKmh)} at ${it.address ?: "${it.latitude}, ${it.longitude}"}" }
+                                routeResults.take(15).map { "${it.deviceTime}: ${UnitFormatter.speed(it.speedKmh, isMetric)} at ${it.address ?: "${it.latitude}, ${it.longitude}"}" }
                             }
                             val pdfFile = generatePdfReport(
                                 context = context,
@@ -429,8 +432,8 @@ fun ReportsTab(
                                     Text("🟢 From: ${trip.startAddress ?: "Initial Origin Point"}", color = Color.LightGray, fontSize = 11.sp)
                                     Text("🔴 To: ${trip.endAddress ?: "Final Destination Point"}", color = Color.LightGray, fontSize = 11.sp)
                                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text("Distance: ${String.format(Locale.US, "%.1f km", trip.distanceKm)}", color = Color.Gray, fontSize = 10.sp)
-                                        Text("Avg: ${String.format(Locale.US, "%.1f km/h", trip.averageSpeedKmh)}", color = Color.Gray, fontSize = 10.sp)
+                                        Text("Distance: ${UnitFormatter.distance(trip.distanceKm, isMetric)}", color = Color.Gray, fontSize = 10.sp)
+                                        Text("Avg: ${UnitFormatter.speed(trip.averageSpeedKmh, isMetric)}", color = Color.Gray, fontSize = 10.sp)
                                         trip.driverName?.let { Text("Driver: $it", color = Color(0xFFF59E0B), fontSize = 10.sp) }
                                     }
                                 }
@@ -456,7 +459,18 @@ fun ReportsTab(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("🛑 Stop #${idx + 1} - ${stop.address ?: "Facility Staging Area"}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text(
+                                                text = if (stop.wasIdling) "⚠️ Engine Idling" else "🅿️ Parked",
+                                                color = if (stop.wasIdling) Color(0xFFEF4444) else Color(0xFF10B981),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp
+                                            )
+                                            if (stop.wasIdling) {
+                                                Text("(Fuel burning)", color = Color(0xFFFCA5A5), fontSize = 10.sp)
+                                            }
+                                        }
+                                        Text("Stop #${idx + 1} - ${stop.address ?: "Facility Staging Area"}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                         Text("Start: ${stop.startTime ?: "N/A"}", color = Color.Gray, fontSize = 10.sp)
                                     }
                                     Text(stop.durationFormatted, color = Color(0xFFF59E0B), fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -510,7 +524,7 @@ fun ReportsTab(
                                         pos.address?.let { Text(it, color = Color.LightGray, fontSize = 9.sp) }
                                     }
                                     Text(
-                                        text = String.format(Locale.US, "%.1f km/h", pos.speedKmh),
+                                        text = UnitFormatter.speed(pos.speedKmh, isMetric),
                                         color = if (pos.speedKmh > 80) Color.Red else Color(0xFF10B981),
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 12.sp

@@ -137,8 +137,10 @@ class ReportStopAdapter {
         val address = map["address"] as? String
         val spentFuel = (map["spentFuel"] as? Number)?.toDouble() ?: 0.0
         val engineHours = (map["engineHours"] as? Number)?.toLong() ?: 0L
+        @Suppress("UNCHECKED_CAST")
+        val attributes = map["attributes"] as? Map<String, Any> ?: emptyMap()
         return com.example.data.model.ReportStop(
-            deviceId, deviceName, duration, startTime, endTime, positionId, latitude, longitude, address, spentFuel, engineHours
+            deviceId, deviceName, duration, startTime, endTime, positionId, latitude, longitude, address, spentFuel, engineHours, attributes
         )
     }
 }

@@ -42,6 +42,7 @@ import com.example.ui.map.SlippyMap
 import com.example.ui.components.DeviceDetailBottomSheet
 import com.example.ui.map.calculateBoundsFit
 import com.example.ui.viewmodel.TraccarViewModel
+import com.example.util.UnitFormatter
 import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -102,6 +103,7 @@ fun DashboardScreen(
     val colorOffline by viewModel.colorOffline.collectAsState()
     val markerTriggerMode by viewModel.markerTriggerMode.collectAsState()
     val infoCardFields by viewModel.infoCardFields.collectAsState()
+    val unitSystem by viewModel.unitSystem.collectAsState()
     val geofences by viewModel.geofences.collectAsState()
     val isGeofenceLayerVisible by viewModel.isGeofenceLayerVisible.collectAsState()
     val selectedGeofenceDetail by viewModel.selectedGeofence.collectAsState()
@@ -951,6 +953,7 @@ fun DashboardScreen(
                         SettingsTab(
                             viewModel = viewModel,
                             appLanguage = appLanguage,
+                            unitSystem = unitSystem,
                             mapProviderStyle = mapProviderStyle,
                             markerLabelStyle = markerLabelStyle,
                             markerIconStyle = markerIconStyle,
@@ -1081,6 +1084,7 @@ fun DashboardScreen(
             device = detailDev,
             position = detailPos,
             recentEvents = emptyList(),
+            unitSystem = unitSystem,
             onDismissRequest = { showDeviceDetailSheet = false },
             onPlaybackClick = { devId ->
                 showDeviceDetailSheet = false
@@ -1116,6 +1120,7 @@ fun DashboardScreen(
         cachedDevices = cachedDevices,
         realtimePositions = realtimePositions,
         selectedDeviceId = selectedDeviceId,
+        unitSystem = unitSystem,
         onSelectDevice = { devId, targetLat, targetLng ->
             lastCenteredDeviceId = null
             viewModel.selectDevice(devId)
@@ -1160,6 +1165,7 @@ fun FleetDevicesDrawerOverlay(
     cachedDevices: List<com.example.data.db.CachedDevice>,
     realtimePositions: Map<Long, com.example.data.model.Position>,
     selectedDeviceId: Long?,
+    unitSystem: String = "metric",
     onSelectDevice: (Long, Double?, Double?) -> Unit,
     onSelectAllFleet: () -> Unit
 ) {
@@ -1496,8 +1502,9 @@ fun FleetDevicesDrawerOverlay(
                                             verticalArrangement = Arrangement.spacedBy(2.dp)
                                         ) {
                                             if (isOnline) {
+                                                val isMetric = unitSystem == "metric"
                                                 Text(
-                                                    text = "${String.format("%.0f", speedVal)} km/h",
+                                                    text = UnitFormatter.speed(speedVal, isMetric),
                                                     color = Color(0xFF10B981),
                                                     fontSize = 11.sp,
                                                     fontWeight = FontWeight.Bold
@@ -2342,6 +2349,17 @@ fun DeviceReportPage(
                             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
                                 Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                     Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text(
+                                                text = if (stop.wasIdling) "⚠️ Engine Idling" else "🅿️ Parked",
+                                                color = if (stop.wasIdling) Color(0xFFEF4444) else Color(0xFF10B981),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp
+                                            )
+                                            if (stop.wasIdling) {
+                                                Text("(Fuel burning)", color = Color(0xFFFCA5A5), fontSize = 10.sp)
+                                            }
+                                        }
                                         Text(stop.address ?: "Staging Facility", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                         Text("Time: ${stop.startTime ?: "N/A"}", color = Color.Gray, fontSize = 10.sp)
                                     }

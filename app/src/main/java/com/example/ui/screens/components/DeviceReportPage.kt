@@ -35,6 +35,7 @@ import com.example.data.model.ReportStop
 import com.example.data.model.ReportSummary
 import com.example.data.model.ReportTrip
 import com.example.ui.viewmodel.TraccarViewModel
+import com.example.util.UnitFormatter
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -516,24 +517,26 @@ fun DeviceReportPage(
             ?: (reportPositions.size * 1.85))
     }
 
-    val totalDistance = remember(totalDistanceValueKm) {
-        String.format(Locale.US, "%.2f km", totalDistanceValueKm)
+    val isMetric = viewModel.sessionManager.unitSystem == "metric"
+
+    val totalDistance = remember(totalDistanceValueKm, isMetric) {
+        UnitFormatter.distance(totalDistanceValueKm, isMetric)
     }
 
     val avgSpeedValueKmh = remember(reportPositions, reportSummary) {
         reportSummary?.averageSpeedKmh?.takeIf { it > 0 }
             ?: (reportPositions.map { it.speedKmh }.average().takeIf { !it.isNaN() } ?: 32.5)
     }
-    val avgSpeed = remember(avgSpeedValueKmh) {
-        String.format(Locale.US, "%.1f km/h", avgSpeedValueKmh)
+    val avgSpeed = remember(avgSpeedValueKmh, isMetric) {
+        UnitFormatter.speed(avgSpeedValueKmh, isMetric)
     }
 
     val maxSpeedValueKmh = remember(reportPositions, reportSummary) {
         reportSummary?.maxSpeedKmh?.takeIf { it > 0 }
             ?: (reportPositions.maxOfOrNull { it.speedKmh } ?: 76.0)
     }
-    val maxSpeed = remember(maxSpeedValueKmh) {
-        String.format(Locale.US, "%.1f km/h", maxSpeedValueKmh)
+    val maxSpeed = remember(maxSpeedValueKmh, isMetric) {
+        UnitFormatter.speed(maxSpeedValueKmh, isMetric)
     }
 
     val spentFuelLiters = remember(totalDistanceValueKm, reportSummary) {
@@ -581,13 +584,13 @@ fun DeviceReportPage(
 
                 val timeStr = SimpleDateFormat("HH:mm a", Locale.getDefault()).format(Date(time))
                 val dateStr = SimpleDateFormat("MMM dd", Locale.getDefault()).format(Date(time))
-                val speedKmhStr = String.format(Locale.US, "%.1f", pos.speedKmh)
+                val formattedSpeed = UnitFormatter.speed(pos.speedKmh, isMetric)
                 val addressInfo = if (!pos.address.isNullOrBlank()) " near ${pos.address}" else ""
 
                 val message = if (pos.speedKmh > 80.0) {
-                    "$dateStr, $timeStr - ⚠️ SPEEDING VIOLATION: $speedKmhStr km/h$addressInfo"
+                    "$dateStr, $timeStr - ⚠️ SPEEDING VIOLATION: $formattedSpeed$addressInfo"
                 } else if (pos.speedKmh > 0.5) {
-                    "$dateStr, $timeStr - Moving at $speedKmhStr km/h$addressInfo"
+                    "$dateStr, $timeStr - Moving at $formattedSpeed$addressInfo"
                 } else {
                     "$dateStr, $timeStr - Stopped/Idling$addressInfo"
                 }
@@ -1028,12 +1031,12 @@ fun DeviceReportPage(
                                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                         Text("Trip: ${trip.durationFormatted}", color = Color(0xFF60A5FA), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                        Text("${String.format(Locale.US, "%.1f km", trip.distanceKm)}", color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Text(UnitFormatter.distance(trip.distanceKm, isMetric), color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     }
                                     Text("From: ${trip.startAddress ?: "Origin"}", color = Color.LightGray, fontSize = 11.sp)
                                     Text("To: ${trip.endAddress ?: "Destination"}", color = Color.LightGray, fontSize = 11.sp)
                                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text("Avg: ${String.format(Locale.US, "%.1f km/h", trip.averageSpeedKmh)}", color = Color.Gray, fontSize = 10.sp)
+                                        Text("Avg: ${UnitFormatter.speed(trip.averageSpeedKmh, isMetric)}", color = Color.Gray, fontSize = 10.sp)
                                         trip.driverName?.let { Text("Driver: $it", color = Color(0xFFF59E0B), fontSize = 10.sp) }
                                     }
                                 }
@@ -1064,6 +1067,17 @@ fun DeviceReportPage(
                             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
                                 Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                     Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text(
+                                                text = if (stop.wasIdling) "⚠️ Engine Idling" else "🅿️ Parked",
+                                                color = if (stop.wasIdling) Color(0xFFEF4444) else Color(0xFF10B981),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp
+                                            )
+                                            if (stop.wasIdling) {
+                                                Text("(Fuel burning)", color = Color(0xFFFCA5A5), fontSize = 10.sp)
+                                            }
+                                        }
                                         Text(stop.address ?: "Staging Facility", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                         Text("Time: ${stop.startTime ?: "N/A"}", color = Color.Gray, fontSize = 10.sp)
                                     }
@@ -1123,7 +1137,7 @@ fun DeviceReportPage(
                                     Text(pos.deviceTime ?: "", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                     Text("${pos.latitude}, ${pos.longitude}", color = Color.Gray, fontSize = 10.sp)
                                 }
-                                Text(String.format(Locale.US, "%.1f km/h", pos.speedKmh), color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text(UnitFormatter.speed(pos.speedKmh, isMetric), color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
                         }
                     }

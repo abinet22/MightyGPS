@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 fun SettingsTab(
     viewModel: TraccarViewModel,
     appLanguage: String,
+    unitSystem: String = "metric",
     mapProviderStyle: String,
     markerLabelStyle: String,
     markerIconStyle: String,
@@ -155,6 +156,36 @@ fun SettingsTab(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = Color(0xFF1E293B))
+
+                // Measurement Unit System (Metric vs Imperial)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Measurement Units (Speed & Distance)", color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(
+                            "metric" to "Metric (km/h, km) 🌍",
+                            "imperial" to "Imperial (mph, mi) 🇬🇧/🇺🇸"
+                        ).forEach { (mode, label) ->
+                            val active = unitSystem == mode
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .background(if (active) Color(0xFF10B981) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
+                                    .border(
+                                        1.dp,
+                                        if (active) Color(0xFF10B981) else Color(0xFF2D3748),
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable { viewModel.setUnitSystem(mode) }
+                                    .padding(vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }

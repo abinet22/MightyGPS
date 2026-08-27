@@ -31,6 +31,7 @@ import com.example.ui.map.SlippyMap
 import com.example.ui.screens.components.MapStyleControlLayer
 import com.example.ui.viewmodel.TraccarViewModel
 import com.example.ui.viewmodel.TraccarViewModel.CustomGeofence
+import com.example.util.UnitFormatter
 
 @Composable
 fun MapTab(
@@ -252,8 +253,9 @@ fun MapTab(
                         )
                     }
                     Column {
+                        val isMetric = viewModel.sessionManager.unitSystem == "metric"
                         Text(
-                            text = "${String.format("%.1f", activePlaybackPos.speedKmh)} KM/H",
+                            text = UnitFormatter.speed(activePlaybackPos.speedKmh, isMetric).uppercase(),
                             color = Color.White,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Black
@@ -591,8 +593,9 @@ fun MapTab(
                                         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
                                     ) {
                                         val displaySpeed = pos?.speedKmh ?: cachedDevices.find { it.id == selectedDeviceId }?.speed ?: 0.0
+                                        val isMetric = viewModel.sessionManager.unitSystem == "metric"
                                         Text(
-                                            text = "${String.format("%.1f", displaySpeed)} km/h",
+                                            text = UnitFormatter.speed(displaySpeed, isMetric),
                                             color = Color(0xFF10B981),
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 13.sp,

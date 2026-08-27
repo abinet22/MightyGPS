@@ -72,7 +72,7 @@ class TraccarRepository(private val context: Context) {
             } else {
                 stopSandboxSimulation()
                 Log.d(TAG, "Configuring REST & WebSocket API clients for: $serverUrl")
-                traccarApi = TraccarApi.create(serverUrl) {
+                traccarApi = TraccarApi.create(serverUrl, sessionManager) {
                     val email = sessionManager.email
                     val password = sessionManager.password
                     if (email.isNotBlank() && password.isNotBlank()) {
@@ -90,6 +90,7 @@ class TraccarRepository(private val context: Context) {
                 // Connect socket if user is logged in
                 if (sessionManager.isLoggedIn) {
                     traccarSocket?.connect()
+                    traccarSocket?.startStalenessWatchdog()
                 }
             }
             observeWebSocketUpdates()
@@ -220,6 +221,7 @@ class TraccarRepository(private val context: Context) {
             
             // Start real-time stream
             traccarSocket?.connect()
+            traccarSocket?.startStalenessWatchdog()
             user
         }
     }
@@ -247,16 +249,6 @@ class TraccarRepository(private val context: Context) {
                 val devices = try {
                     api.getDevices(all = true)
                 } catch (e: Exception) {
-                    if (e is retrofit2.HttpException && e.code() == 401) {
-                        // Re-authenticate session if cookie expired
-                        val email = sessionManager.email
-                        val password = sessionManager.password
-                        if (email.isNotBlank() && password.isNotBlank()) {
-                            try {
-                                api.login(email, password)
-                            } catch (_: Exception) {}
-                        }
-                    }
                     Log.w(TAG, "getDevices(all=true) returned: ${e.message}, falling back to all=null")
                     api.getDevices(all = null)
                 }
@@ -402,16 +394,26 @@ class TraccarRepository(private val context: Context) {
         }
     }
 
-    suspend fun sendCommand(deviceId: Long, commandType: String, description: String) {
-        if (!isDemo()) {
-            val api = traccarApi ?: throw IllegalStateException("API not configured")
-            api.sendCommand(
-                DeviceCommand(
-                    deviceId = deviceId,
-                    type = commandType,
-                    description = description
-                )
+    suspend fun sendCommand(deviceId: Long, commandType: String, description: String): CommandResult {
+        if (isDemo()) {
+            delay(400)
+            return CommandResult(success = true, queued = false, code = 200)
+        }
+        val api = traccarApi ?: return CommandResult(false, false, -1, "API not configured")
+        return try {
+            val response = api.sendCommand(
+                DeviceCommand(deviceId = deviceId, type = commandType, description = description)
             )
+            when {
+                response.code() == 202 -> CommandResult(true, queued = true, code = 202) // Traccar returns 202 when device is offline & command is queued
+                response.isSuccessful -> CommandResult(true, false, response.code())
+                response.code() == 401 || response.code() == 403 -> CommandResult(false, false, response.code(), "Unauthorized to send this command")
+                response.code() == 400 -> CommandResult(false, false, 400, "Command not supported by this device's protocol")
+                response.code() == 504 -> CommandResult(false, false, 504, "Device did not respond in time")
+                else -> CommandResult(false, false, response.code(), "Unexpected response ${response.code()}")
+            }
+        } catch (e: Exception) {
+            CommandResult(false, false, -1, e.message)
         }
     }
 
@@ -613,6 +615,7 @@ class TraccarRepository(private val context: Context) {
                 val durationMs = (15 + (i * 12) % 60) * 60 * 1000L
                 val endTimeMillis = startTimeMillis + durationMs
 
+                val isEngineIdling = (i % 2 == 1) // Alternate between parked (engine off) and idling (engine on)
                 stops.add(
                     ReportStop(
                         deviceId = devId,
@@ -625,7 +628,8 @@ class TraccarRepository(private val context: Context) {
                         longitude = loc.second.second,
                         address = loc.first,
                         spentFuel = 0.4 + (i % 3) * 0.2,
-                        engineHours = (durationMs * 0.2).toLong()
+                        engineHours = if (isEngineIdling) durationMs / 1000 else 0L,
+                        attributes = mapOf("ignition" to isEngineIdling)
                     )
                 )
             }
@@ -721,7 +725,7 @@ class TraccarRepository(private val context: Context) {
             return list
         } else {
             val api = traccarApi ?: return emptyList()
-            return try {
+            val raw = try {
                 api.getRouteReport(deviceId, from, to)
             } catch (e: retrofit2.HttpException) {
                 if (e.code() == 401 || e.code() == 403 || e.code() == 404) {
@@ -743,6 +747,7 @@ class TraccarRepository(private val context: Context) {
                     emptyList()
                 }
             }
+            return com.example.util.PositionSanitizer.sanitize(raw)
         }
     }
 

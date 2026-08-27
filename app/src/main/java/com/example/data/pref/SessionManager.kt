@@ -27,6 +27,7 @@ class SessionManager(context: Context) {
         private const val KEY_COLOR_OFFLINE = "custom_color_offline"
         private const val KEY_MARKER_TRIGGER_MODE = "custom_marker_trigger_mode"
         private const val KEY_INFO_CARD_FIELDS = "custom_info_card_fields"
+        private const val KEY_UNIT_SYSTEM = "custom_unit_system"
     }
 
     var serverUrl: String
@@ -122,6 +123,10 @@ class SessionManager(context: Context) {
             "name,speed,driver,lastUpdate,address,battery,odometer,ignition"
         }
         set(value) = prefs.edit().putString(KEY_INFO_CARD_FIELDS, value).apply()
+
+    var unitSystem: String
+        get() = try { prefs.getString(KEY_UNIT_SYSTEM, "metric") ?: "metric" } catch (_: Exception) { "metric" }
+        set(value) = prefs.edit().putString(KEY_UNIT_SYSTEM, value).apply()
 
     fun logout() {
         prefs.edit().clear().apply()

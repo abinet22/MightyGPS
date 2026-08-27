@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import okhttp3.*
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okio.ByteString
 import java.util.concurrent.TimeUnit
 
@@ -47,8 +48,24 @@ class TraccarWebSocket(
 
     private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var reconnectJob: Job? = null
+    private var watchdogJob: Job? = null
     private var failedAttempts = 0
     private var isExplicitlyDisconnected = false
+    private var lastMessageAt = System.currentTimeMillis()
+
+    fun startStalenessWatchdog(thresholdMs: Long = 45_000) {
+        watchdogJob?.cancel()
+        watchdogJob = coroutineScope.launch {
+            while (isActive) {
+                delay(10_000)
+                if (!isExplicitlyDisconnected && (System.currentTimeMillis() - lastMessageAt > thresholdMs)) {
+                    Log.w(TAG, "Socket stale (no messages in ${thresholdMs}ms) — forcing reconnect")
+                    lastMessageAt = System.currentTimeMillis()
+                    connect()
+                }
+            }
+        }
+    }
 
     fun connect() {
         isExplicitlyDisconnected = false
@@ -92,7 +109,11 @@ class TraccarWebSocket(
             .url(finalSocketUrl)
             .header("Accept", "application/json")
         
-        if (basicToken != null) {
+        val httpScheme = if (isHttps) "https://" else "http://"
+        val httpUrlForCookies = "$httpScheme$cleanUrl$appendPath".toHttpUrlOrNull()
+        val hasCookie = httpUrlForCookies != null && TraccarCookieJar.loadForRequest(httpUrlForCookies).isNotEmpty()
+
+        if (!hasCookie && basicToken != null) {
             requestBuilder.header("Authorization", basicToken)
         }
 
@@ -102,16 +123,19 @@ class TraccarWebSocket(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "Traccar WebSocket connection established successfully (HTTP ${response.code})")
                 failedAttempts = 0
+                lastMessageAt = System.currentTimeMillis()
                 coroutineScope.launch {
                     _connectionState.emit(true)
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                lastMessageAt = System.currentTimeMillis()
                 parseAndEmitPayload(text)
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                lastMessageAt = System.currentTimeMillis()
                 val text = bytes.utf8()
                 parseAndEmitPayload(text)
             }
@@ -222,6 +246,7 @@ class TraccarWebSocket(
 
     fun disconnect() {
         isExplicitlyDisconnected = true
+        watchdogJob?.cancel()
         reconnectJob?.cancel()
         disconnectInternal()
         coroutineScope.launch {

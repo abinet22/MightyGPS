@@ -33,6 +33,7 @@ import com.example.ui.map.MapMarker
 import com.example.ui.map.SlippyMap
 import com.example.ui.screens.components.MapStyleControlLayer
 import com.example.ui.viewmodel.TraccarViewModel
+import com.example.util.UnitFormatter
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -827,20 +828,22 @@ fun PlaybackTab(
                                     fontWeight = FontWeight.ExtraBold
                                 )
 
+                                val isMetric = viewModel.sessionManager.unitSystem == "metric"
                                 val totalDist = calculateCumulativeDistance(routeHistory, playbackStepIndex)
                                 Text(
-                                    text = "Crumb ${playbackStepIndex + 1}/${routeHistory.size} • Distance: ${String.format("%.2f", totalDist)} km",
+                                    text = "Crumb ${playbackStepIndex + 1}/${routeHistory.size} • Distance: ${UnitFormatter.distance(totalDist, isMetric)}",
                                     color = Color.Gray,
                                     fontSize = 9.5.sp
                                 )
                             }
 
+                            val isMetric = viewModel.sessionManager.unitSystem == "metric"
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Card(
                                     colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
                                 ) {
                                     Text(
-                                        text = "${String.format("%.1f", currentPoint.speedKmh)} km/h",
+                                        text = UnitFormatter.speed(currentPoint.speedKmh, isMetric),
                                         color = Color(0xFF10B981),
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
@@ -851,7 +854,7 @@ fun PlaybackTab(
                                     colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
                                 ) {
                                     Text(
-                                        text = "${String.format("%.0f", currentPoint.altitude)}m Alt",
+                                        text = UnitFormatter.altitude(currentPoint.altitude, isMetric),
                                         color = Color(0xFF3B82F6),
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.ExtraBold,

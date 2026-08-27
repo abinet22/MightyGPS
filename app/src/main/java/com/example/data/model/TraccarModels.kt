@@ -17,14 +17,14 @@ data class Device(
 )
 
 data class Position(
-    val id: Long,
-    val deviceId: Long,
+    val id: Long = 0L,
+    val deviceId: Long = 0L,
     val protocol: String? = null,
-    val deviceTime: String?,
-    val fixTime: String?,
+    val deviceTime: String? = null,
+    val fixTime: String? = null,
     val valid: Boolean = true,
-    val latitude: Double,
-    val longitude: Double,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
     val altitude: Double = 0.0,
     val speed: Double = 0.0, // speed in knots
     val course: Double = 0.0,
@@ -160,8 +160,11 @@ data class ReportStop(
     val longitude: Double = 0.0,
     val address: String? = null,
     val spentFuel: Double = 0.0,
-    val engineHours: Long = 0
+    val engineHours: Long = 0,
+    val attributes: Map<String, Any> = emptyMap()
 ) {
+    val wasIdling: Boolean get() = (attributes["ignition"] as? Boolean) == true && duration > 0
+
     val durationFormatted: String
         get() {
             val totalSeconds = duration / 1000
@@ -198,6 +201,13 @@ data class Server(
     val longitude: Double = 0.0,
     val zoom: Int = 0,
     val version: String? = null
+)
+
+data class CommandResult(
+    val success: Boolean,
+    val queued: Boolean,
+    val code: Int,
+    val error: String? = null
 )
 
 

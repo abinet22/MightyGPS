@@ -143,6 +143,9 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
     private val _infoCardFields = MutableStateFlow(sessionManager.infoCardFields)
     val infoCardFields: StateFlow<String> = _infoCardFields.asStateFlow()
 
+    private val _unitSystem = MutableStateFlow(sessionManager.unitSystem)
+    val unitSystem: StateFlow<String> = _unitSystem.asStateFlow()
+
     // Data holder for custom local geofences
     data class CustomGeofence(
         val id: String,
@@ -241,6 +244,11 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
     fun setInfoCardFields(fields: String) {
         sessionManager.infoCardFields = fields
         _infoCardFields.value = fields
+    }
+
+    fun setUnitSystem(system: String) {
+        sessionManager.unitSystem = system
+        _unitSystem.value = system
     }
 
     fun addGeofence(
@@ -386,23 +394,19 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 )
                 _commandsLog.value = listOf(newCmd) + _commandsLog.value
                 
-                // Attempt to send real Traccar rest-api command if connected
-                if (sessionManager.serverUrl != "DEMO") {
-                    // Send actual request if supported by Traccar api
-                    try {
-                        repository.sendCommand(deviceId, commandType, description)
-                        _feedbackMessage.value = "$commandType successfully command-queued"
-                        // update status
-                        updateCommandStatus(newCmd.id, "EXECUTED")
-                    } catch (e: Exception) {
-                        _feedbackMessage.value = "API Sent - Queued on Server"
-                        updateCommandStatus(newCmd.id, "ACKNOWLEDGED")
-                    }
-                } else {
-                    kotlinx.coroutines.delay(1000)
-                    _feedbackMessage.value = "$commandType simulated payload completed successfully!"
-                    updateCommandStatus(newCmd.id, "EXECUTED")
+                // Send command via repository (handles demo mode & live Traccar REST API)
+                val result = repository.sendCommand(deviceId, commandType, description)
+                val statusLabel = when {
+                    result.success && result.queued -> "QUEUED"   // device offline, GPRS/SMS pending
+                    result.success -> "EXECUTED"
+                    else -> "FAILED"
                 }
+                _feedbackMessage.value = when {
+                    result.success && result.queued -> "$commandType queued — device is offline, will execute on reconnect"
+                    result.success -> "$commandType executed successfully"
+                    else -> "Command failed: ${result.error ?: "HTTP ${result.code}"}"
+                }
+                updateCommandStatus(newCmd.id, statusLabel)
             } catch (e: Exception) {
                 _feedbackMessage.value = "Failed sending command: ${e.message}"
             }
@@ -1101,6 +1105,84 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
         daily: Boolean? = null
     ): List<com.example.data.model.ReportSummary> = wrapSync("Summary Report") {
         repository.getSummaryReport(deviceId, from, to, daily)
+    }
+
+    suspend fun queryReconciledPeriodReport(
+        deviceId: Long,
+        periodType: com.example.data.model.PeriodType,
+        referenceDate: Date = Date()
+    ): com.example.data.model.PeriodReport = wrapSync("Reconciled Period Report") {
+        val (fromUtc, toUtc) = com.example.util.ReportReconciliationManager.calculateUtcRangeForPeriod(
+            periodType = periodType,
+            referenceDate = referenceDate
+        )
+        val devName = devices.value.find { it.id == deviceId }?.name ?: "Device #$deviceId"
+        val summaries = repository.getSummaryReport(deviceId, fromUtc, toUtc, daily = true)
+        
+        // Convert Traccar ReportSummary list to DailySummary models
+        val dailyList = summaries.mapIndexed { idx, s ->
+            val movingDurationMs = if (s.averageSpeed > 0.0) {
+                ((s.distance / 1000.0) / (s.averageSpeed * 1.852) * 3600000).toLong()
+            } else 0L
+            val idleMs = maxOf(0L, s.engineHours - movingDurationMs)
+            com.example.data.model.DailySummary(
+                date = "Day #${idx + 1}",
+                deviceId = s.deviceId,
+                deviceName = s.deviceName.ifEmpty { devName },
+                totalDistanceMeters = s.distance,
+                movingDurationMs = movingDurationMs,
+                idleDurationMs = idleMs,
+                stopDurationMs = 0L,
+                maxSpeedKnots = s.maxSpeed,
+                averageSpeedKnots = s.averageSpeed,
+                spentFuelLiters = s.spentFuel,
+                engineHoursMs = s.engineHours
+            )
+        }
+        com.example.util.ReportReconciliationManager.reconcilePeriodReport(
+            periodType = periodType,
+            dailySummaries = dailyList,
+            deviceId = deviceId,
+            deviceName = devName,
+            fromUtc = fromUtc,
+            toUtc = toUtc
+        )
+    }
+
+    suspend fun querySpeedingViolationReport(
+        deviceId: Long,
+        from: String,
+        to: String,
+        speedLimitKmh: Double = 80.0
+    ): com.example.data.model.SpeedingViolationReport = wrapSync("Speeding Violation Report") {
+        val devName = devices.value.find { it.id == deviceId }?.name ?: "Device #$deviceId"
+        val positions = repository.getRouteHistory(deviceId, from, to)
+        com.example.util.ReportReconciliationManager.generateSpeedingViolationReport(
+            positions = positions,
+            speedLimitKmh = speedLimitKmh,
+            deviceId = deviceId,
+            deviceName = devName
+        )
+    }
+
+    suspend fun queryGeofenceAnalyticsReport(
+        geofenceId: Long,
+        geofenceName: String,
+        deviceId: Long,
+        from: String,
+        to: String
+    ): com.example.data.model.GeofenceReport = wrapSync("Geofence Report") {
+        val devName = devices.value.find { it.id == deviceId }?.name ?: "Device #$deviceId"
+        val events = repository.getEventsReport(deviceId, from, to)
+        com.example.util.ReportReconciliationManager.generateGeofenceReport(
+            events = events,
+            geofenceId = geofenceId,
+            geofenceName = geofenceName,
+            deviceId = deviceId,
+            deviceName = devName,
+            periodStartUtc = from,
+            periodEndUtc = to
+        )
     }
 
     suspend fun queryTripsReport(
