@@ -54,10 +54,55 @@ interface TraccarApi {
 
     @GET("api/reports/events")
     suspend fun getEventsReport(
-        @Query("deviceId") deviceId: Long,
+        @Query("deviceId") deviceId: Long? = null,
+        @Query("groupId") groupId: Long? = null,
+        @Query("type") type: String? = null,
         @Query("from") from: String,
         @Query("to") to: String
     ): List<Event>
+
+    @GET("api/reports/summary")
+    suspend fun getSummaryReport(
+        @Query("deviceId") deviceId: Long? = null,
+        @Query("groupId") groupId: Long? = null,
+        @Query("from") from: String,
+        @Query("to") to: String,
+        @Query("daily") daily: Boolean? = null
+    ): List<ReportSummary>
+
+    @GET("api/reports/trips")
+    suspend fun getTripsReport(
+        @Query("deviceId") deviceId: Long? = null,
+        @Query("groupId") groupId: Long? = null,
+        @Query("from") from: String,
+        @Query("to") to: String
+    ): List<ReportTrip>
+
+    @GET("api/reports/stops")
+    suspend fun getStopsReport(
+        @Query("deviceId") deviceId: Long? = null,
+        @Query("groupId") groupId: Long? = null,
+        @Query("from") from: String,
+        @Query("to") to: String
+    ): List<ReportStop>
+
+    @GET("api/server")
+    suspend fun getServer(): Server
+
+    @GET("api/drivers")
+    suspend fun getDrivers(): List<Driver>
+
+    @POST("api/drivers")
+    suspend fun createDriver(@Body driver: Driver): Driver
+
+    @PUT("api/drivers/{id}")
+    suspend fun updateDriver(@Path("id") id: Long, @Body driver: Driver): Driver
+
+    @DELETE("api/drivers/{id}")
+    suspend fun deleteDriver(@Path("id") id: Long): retrofit2.Response<Unit>
+
+    @GET("api/groups")
+    suspend fun getGroups(): List<Group>
 
     @GET("api/users")
     suspend fun getUsers(): List<User>
@@ -75,7 +120,12 @@ interface TraccarApi {
     suspend fun sendCommand(@Body command: DeviceCommand): retrofit2.Response<Unit>
 
     @GET("api/geofences")
-    suspend fun getGeofences(): List<TraccarGeofence>
+    suspend fun getGeofences(
+        @Query("deviceId") deviceId: Long? = null,
+        @Query("groupId") groupId: Long? = null,
+        @Query("all") all: Boolean? = null,
+        @Query("refresh") refresh: Boolean? = null
+    ): List<TraccarGeofence>
 
     @POST("api/geofences")
     suspend fun createGeofence(@Body geofence: TraccarGeofence): TraccarGeofence
@@ -127,6 +177,9 @@ interface TraccarApi {
                 .add(PositionAdapter())
                 .add(UserAdapter())
                 .add(EventAdapter())
+                .add(ReportSummaryAdapter())
+                .add(ReportTripAdapter())
+                .add(ReportStopAdapter())
                 .addLast(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
                 .build()
 

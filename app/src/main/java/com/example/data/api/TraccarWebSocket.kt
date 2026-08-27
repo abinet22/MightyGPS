@@ -1,16 +1,19 @@
 package com.example.data.api
 
 import android.util.Log
+import com.example.data.model.Device
+import com.example.data.model.Event
+import com.example.data.model.Position
 import com.example.data.model.SocketUpdate
 import com.squareup.moshi.Moshi
+import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.launch
 import okhttp3.*
+import okio.ByteString
 import java.util.concurrent.TimeUnit
 
 class TraccarWebSocket(
@@ -20,6 +23,7 @@ class TraccarWebSocket(
     private val TAG = "TraccarWebSocket"
     private var client: OkHttpClient? = null
     private var webSocket: WebSocket? = null
+    
     private val moshi = Moshi.Builder()
         .add(DeviceAdapter())
         .add(PositionAdapter())
@@ -27,53 +31,60 @@ class TraccarWebSocket(
         .add(EventAdapter())
         .addLast(KotlinJsonAdapterFactory())
         .build()
+        
     private val socketUpdateAdapter = moshi.adapter(SocketUpdate::class.java)
+    private val positionListAdapter = moshi.adapter<List<Position>>(
+        Types.newParameterizedType(List::class.java, Position::class.java)
+    )
+    private val singlePositionAdapter = moshi.adapter(Position::class.java)
+    private val singleDeviceAdapter = moshi.adapter(Device::class.java)
 
-    private val _updates = MutableSharedFlow<SocketUpdate>(extraBufferCapacity = 64)
+    private val _updates = MutableSharedFlow<SocketUpdate>(extraBufferCapacity = 128)
     val updates: SharedFlow<SocketUpdate> = _updates.asSharedFlow()
 
     private val _connectionState = MutableSharedFlow<Boolean>(replay = 1)
     val connectionState: SharedFlow<Boolean> = _connectionState.asSharedFlow()
 
-    private val coroutineScope = CoroutineScope(Dispatchers.IO)
+    private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var reconnectJob: Job? = null
     private var failedAttempts = 0
+    private var isExplicitlyDisconnected = false
 
     fun connect() {
-        disconnect()
+        isExplicitlyDisconnected = false
+        reconnectJob?.cancel()
+        disconnectInternal()
 
         val credential = credentialsProvider()
         val basicToken = if (credential != null) {
             Credentials.basic(credential.first, credential.second)
         } else null
 
-        // Clean any protocol prefixes from the serverUrl input
+        val isHttps = serverUrl.trim().startsWith("https://", ignoreCase = true)
         val cleanUrl = serverUrl
-            .replace("https://", "")
-            .replace("http://", "")
-            .replace("wss://", "")
-            .replace("ws://", "")
+            .replace("https://", "", ignoreCase = true)
+            .replace("http://", "", ignoreCase = true)
+            .replace("wss://", "", ignoreCase = true)
+            .replace("ws://", "", ignoreCase = true)
             .trim()
 
-        val appendPath = if (cleanUrl.endsWith("/")) "api/socket" else "/api/socket"
-        
-        // Alternate protocol on failures to guarantee compatibility
-        // Attempt secure 'wss' first (especially needed in newer Android API targets)
-        val isSecure = if (failedAttempts % 2 == 0) {
-            true
-        } else {
-            false
+        if (cleanUrl.isBlank() || cleanUrl.equals("DEMO", ignoreCase = true)) {
+            coroutineScope.launch { _connectionState.emit(false) }
+            return
         }
-        
-        val protocol = if (isSecure) "wss://" else "ws://"
+
+        val appendPath = if (cleanUrl.endsWith("/")) "api/socket" else "/api/socket"
+        val protocol = if (isHttps) "wss://" else "ws://"
         val finalSocketUrl = "$protocol$cleanUrl$appendPath"
 
-        Log.d(TAG, "Connecting to WebSocket (attempt ${failedAttempts + 1}): $finalSocketUrl")
+        Log.d(TAG, "Connecting to Traccar WebSocket: $finalSocketUrl")
 
         val clientInterceptor = OkHttpClient.Builder()
-            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS) // Disable timeouts for permanent socket
-            .pingInterval(15, java.util.concurrent.TimeUnit.SECONDS) // Send keep-alive ping frame every 15s to prevent disconnection
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .pingInterval(15, TimeUnit.SECONDS)
             .cookieJar(TraccarCookieJar)
+            .retryOnConnectionFailure(true)
             .build()
         client = clientInterceptor
 
@@ -89,54 +100,130 @@ class TraccarWebSocket(
         
         webSocket = client?.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d(TAG, "WebSocket Opened successfully")
-                failedAttempts = 0 // Reset attempt counter on success!
+                Log.d(TAG, "Traccar WebSocket connection established successfully (HTTP ${response.code})")
+                failedAttempts = 0
                 coroutineScope.launch {
                     _connectionState.emit(true)
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                Log.v(TAG, "WebSocket received payload: $text")
-                coroutineScope.launch {
-                    try {
-                        val parsed = socketUpdateAdapter.fromJson(text)
-                        if (parsed != null) {
-                            _updates.emit(parsed)
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to parse WebSocket message JSON: ${e.message}")
-                    }
-                }
+                parseAndEmitPayload(text)
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                val text = bytes.utf8()
+                parseAndEmitPayload(text)
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                Log.d(TAG, "Traccar WebSocket closing: $code / $reason")
+                webSocket.close(1000, null)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "WebSocket Closed: $reason ($code)")
+                Log.d(TAG, "Traccar WebSocket Closed: $reason ($code)")
                 coroutineScope.launch {
                     _connectionState.emit(false)
                 }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket Error: ${t.message}")
+                val errorMsg = t.message ?: (response?.let { "HTTP ${it.code} ${it.message}" } ?: "Unknown socket error")
+                val isProxyHttp200 = errorMsg.contains("200 OK", ignoreCase = true)
+                
+                if (failedAttempts < 2) {
+                    Log.w(TAG, "WebSocket connection notice: $errorMsg. REST fallback active.")
+                } else {
+                    Log.d(TAG, "WebSocket offline: $errorMsg")
+                }
                 failedAttempts++
                 coroutineScope.launch {
                     _connectionState.emit(false)
                 }
-                // Try to reconnect in 5 seconds
-                coroutineScope.launch {
-                    kotlinx.coroutines.delay(5000)
-                    Log.d(TAG, "Reconnecting WebSocket (attempt $failedAttempts)...")
-                    connect()
+
+                if (!isExplicitlyDisconnected) {
+                    reconnectJob?.cancel()
+                    val backoffSeconds = when {
+                        isProxyHttp200 -> 120L
+                        failedAttempts <= 1 -> 5L
+                        failedAttempts == 2 -> 15L
+                        failedAttempts == 3 -> 30L
+                        else -> 60L
+                    }
+                    reconnectJob = coroutineScope.launch {
+                        delay(backoffSeconds * 1000L)
+                        if (!isExplicitlyDisconnected) {
+                            Log.d(TAG, "Attempting WebSocket reconnect after ${backoffSeconds}s...")
+                            connect()
+                        }
+                    }
                 }
             }
         })
     }
 
-    fun disconnect() {
-        webSocket?.close(1000, "User logout / context reset")
+    private fun parseAndEmitPayload(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        
+        coroutineScope.launch {
+            try {
+                if (trimmed.startsWith("{")) {
+                    // Try primary SocketUpdate standard JSON structure
+                    val update = socketUpdateAdapter.fromJson(trimmed)
+                    if (update != null && (update.positions != null || update.devices != null || update.events != null)) {
+                        _updates.emit(update)
+                        return@launch
+                    }
+                    
+                    // Try single Position object fallback
+                    try {
+                        val singlePos = singlePositionAdapter.fromJson(trimmed)
+                        if (singlePos != null && (singlePos.latitude != 0.0 || singlePos.longitude != 0.0)) {
+                            _updates.emit(SocketUpdate(positions = listOf(singlePos)))
+                            return@launch
+                        }
+                    } catch (_: Exception) {}
+
+                    // Try single Device object fallback
+                    try {
+                        val singleDev = singleDeviceAdapter.fromJson(trimmed)
+                        if (singleDev != null && singleDev.id != 0L) {
+                            _updates.emit(SocketUpdate(devices = listOf(singleDev)))
+                            return@launch
+                        }
+                    } catch (_: Exception) {}
+                } else if (trimmed.startsWith("[")) {
+                    // Array of positions fallback
+                    try {
+                        val posList = positionListAdapter.fromJson(trimmed)
+                        if (!posList.isNullOrEmpty()) {
+                            _updates.emit(SocketUpdate(positions = posList))
+                            return@launch
+                        }
+                    } catch (_: Exception) {}
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to parse Traccar WebSocket payload: ${e.message}")
+            }
+        }
+    }
+
+    private fun disconnectInternal() {
+        try {
+            webSocket?.close(1000, "Reset")
+        } catch (e: Exception) {
+            // ignore
+        }
         webSocket = null
         client = null
+    }
+
+    fun disconnect() {
+        isExplicitlyDisconnected = true
+        reconnectJob?.cancel()
+        disconnectInternal()
         coroutineScope.launch {
             _connectionState.emit(false)
         }

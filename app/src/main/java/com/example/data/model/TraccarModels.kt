@@ -92,3 +92,112 @@ data class TraccarPermission(
     val groupId: Long? = null
 )
 
+@JsonClass(generateAdapter = true)
+data class ReportSummary(
+    val deviceId: Long = 0,
+    val deviceName: String = "",
+    val maxSpeed: Double = 0.0, // knots
+    val averageSpeed: Double = 0.0, // knots
+    val distance: Double = 0.0, // meters
+    val spentFuel: Double = 0.0, // liters
+    val engineHours: Long = 0 // milliseconds
+) {
+    val distanceKm: Double get() = distance / 1000.0
+    val maxSpeedKmh: Double get() = maxSpeed * 1.852
+    val averageSpeedKmh: Double get() = averageSpeed * 1.852
+    val engineHoursFormatted: String
+        get() {
+            val totalSeconds = engineHours / 1000
+            val hours = totalSeconds / 3600
+            val minutes = (totalSeconds % 3600) / 60
+            return "${hours}h ${minutes}m"
+        }
+}
+
+@JsonClass(generateAdapter = true)
+data class ReportTrip(
+    val deviceId: Long = 0,
+    val deviceName: String = "",
+    val distance: Double = 0.0, // meters
+    val averageSpeed: Double = 0.0, // knots
+    val maxSpeed: Double = 0.0, // knots
+    val spentFuel: Double = 0.0,
+    val startPositionId: Long = 0,
+    val endPositionId: Long = 0,
+    val startTime: String? = null,
+    val startAddress: String? = null,
+    val startLat: Double = 0.0,
+    val startLon: Double = 0.0,
+    val endTime: String? = null,
+    val endAddress: String? = null,
+    val endLat: Double = 0.0,
+    val endLon: Double = 0.0,
+    val duration: Long = 0, // milliseconds
+    val driverUniqueId: String? = null,
+    val driverName: String? = null
+) {
+    val distanceKm: Double get() = distance / 1000.0
+    val averageSpeedKmh: Double get() = averageSpeed * 1.852
+    val maxSpeedKmh: Double get() = maxSpeed * 1.852
+    val durationFormatted: String
+        get() {
+            val totalSeconds = duration / 1000
+            val hours = totalSeconds / 3600
+            val minutes = (totalSeconds % 3600) / 60
+            return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
+        }
+}
+
+@JsonClass(generateAdapter = true)
+data class ReportStop(
+    val deviceId: Long = 0,
+    val deviceName: String = "",
+    val duration: Long = 0, // milliseconds
+    val startTime: String? = null,
+    val endTime: String? = null,
+    val positionId: Long = 0,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val address: String? = null,
+    val spentFuel: Double = 0.0,
+    val engineHours: Long = 0
+) {
+    val durationFormatted: String
+        get() {
+            val totalSeconds = duration / 1000
+            val hours = totalSeconds / 3600
+            val minutes = (totalSeconds % 3600) / 60
+            return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
+        }
+}
+
+@JsonClass(generateAdapter = true)
+data class Driver(
+    val id: Long = 0,
+    val name: String = "",
+    val uniqueId: String = "",
+    val attributes: Map<String, Any> = emptyMap()
+)
+
+@JsonClass(generateAdapter = true)
+data class Group(
+    val id: Long = 0,
+    val name: String = "",
+    val groupId: Long = 0,
+    val attributes: Map<String, Any> = emptyMap()
+)
+
+@JsonClass(generateAdapter = true)
+data class Server(
+    val id: Long = 0,
+    val registration: Boolean = false,
+    val readonly: Boolean = false,
+    val deviceReadonly: Boolean = false,
+    val map: String? = null,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val zoom: Int = 0,
+    val version: String? = null
+)
+
+

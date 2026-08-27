@@ -140,7 +140,8 @@ fun AdminScreen(
                         label = { Text("Full Name / Group Name") },
                         placeholder = { Text("e.g. John Doe, Fleet B Manager") },
                         singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
+                        modifier = Modifier.fillMaxWidth()
                     )
 
                     OutlinedTextField(
@@ -149,7 +150,8 @@ fun AdminScreen(
                         label = { Text("Email Handle") },
                         placeholder = { Text("e.g. operator@tenant.com") },
                         singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
+                        modifier = Modifier.fillMaxWidth()
                     )
 
                     Row(

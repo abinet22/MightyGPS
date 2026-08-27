@@ -13,20 +13,34 @@ android {
   defaultConfig {
     applicationId = "com.aistudio.saasgpstracker.tzxuvy"
     minSdk = 24
-    targetSdk = 36
-    versionCode = 5
-    versionName = "5.0"
+    targetSdk = 35
+    versionCode = 31
+    versionName = "31.0"
+
+    val mapsKey = (project.findProperty("GOOGLE_MAPS_API_KEY") as? String)
+        ?: System.getenv("GOOGLE_MAPS_API_KEY")
+        ?: "AIzaSyMightyGpsFallbackPlatformKeyForTiles"
+    manifestPlaceholders["GOOGLE_MAPS_API_KEY"] = mapsKey
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
   signingConfigs {
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
+      val customKeystore = System.getenv("KEYSTORE_PATH")?.let { file(it) }
+      val uploadKeystore = file("${rootDir}/my-upload-key.jks")
+      val debugKeystore = file("${rootDir}/debug.keystore")
+
+      val targetKeystore = when {
+        customKeystore != null && customKeystore.exists() -> customKeystore
+        uploadKeystore.exists() -> uploadKeystore
+        else -> debugKeystore
+      }
+
+      storeFile = targetKeystore
+      storePassword = System.getenv("STORE_PASSWORD") ?: "android"
+      keyAlias = System.getenv("KEY_ALIAS") ?: (if (targetKeystore == debugKeystore) "androiddebugkey" else "upload")
+      keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
@@ -69,7 +83,7 @@ secrets {
 // This makes it easy to add them back in the future if needed.
 dependencies {
   implementation(platform(libs.androidx.compose.bom))
-  implementation(platform(libs.firebase.bom))
+  // implementation(platform(libs.firebase.bom))
   implementation(libs.accompanist.permissions)
   implementation(libs.androidx.activity.compose)
   // implementation(libs.androidx.camera.camera2)
@@ -99,6 +113,8 @@ dependencies {
   implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
   implementation(libs.play.services.location)
+  implementation(libs.play.services.maps)
+  implementation(libs.maps.compose)
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
@@ -119,3 +135,4 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+

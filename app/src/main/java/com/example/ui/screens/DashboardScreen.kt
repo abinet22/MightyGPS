@@ -32,13 +32,22 @@ import com.example.data.db.CachedAlert
 import com.example.data.db.CachedDevice
 import com.example.data.model.Device
 import com.example.data.model.Position
+import com.example.data.model.ReportSummary
+import com.example.data.model.ReportTrip
+import com.example.data.model.ReportStop
+import com.example.data.model.Event
+import java.util.Calendar
+
 import com.example.ui.map.SlippyMap
+import com.example.ui.components.DeviceDetailBottomSheet
+import com.example.ui.map.calculateBoundsFit
 import com.example.ui.viewmodel.TraccarViewModel
 import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.shadow
 import coil.compose.AsyncImage
@@ -56,22 +65,12 @@ import androidx.core.content.FileProvider
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-
-data class GeofenceAlert(
-    val id: String = java.util.UUID.randomUUID().toString(),
-    val deviceName: String,
-    val geofenceName: String,
-    val type: String, // "ENTERED" or "EXITED"
-    val timestamp: Long = System.currentTimeMillis()
-)
-
-data class ConsolidatedAlert(
-    val deviceName: String,
-    val alertType: String,
-    val isEntered: Boolean,
-    val message: String,
-    val timestamp: Long = System.currentTimeMillis()
-)
+import com.example.data.model.GeofenceAlert
+import com.example.data.model.ConsolidatedAlert
+import com.example.ui.screens.components.*
+import com.example.ui.screens.tabs.*
+import com.example.util.generatePdfReport
+import com.example.util.sharePdfReport
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -97,7 +96,15 @@ fun DashboardScreen(
     val markerLabelStyle by viewModel.markerLabelStyle.collectAsState()
     val markerIconStyle by viewModel.markerIconStyle.collectAsState()
     val customIconUri by viewModel.customIconUri.collectAsState()
+    val positionUpdateInterval by viewModel.positionUpdateInterval.collectAsState()
+    val colorMoving by viewModel.colorMoving.collectAsState()
+    val colorIdle by viewModel.colorIdle.collectAsState()
+    val colorOffline by viewModel.colorOffline.collectAsState()
+    val markerTriggerMode by viewModel.markerTriggerMode.collectAsState()
+    val infoCardFields by viewModel.infoCardFields.collectAsState()
     val geofences by viewModel.geofences.collectAsState()
+    val isGeofenceLayerVisible by viewModel.isGeofenceLayerVisible.collectAsState()
+    val selectedGeofenceDetail by viewModel.selectedGeofence.collectAsState()
     val commandsLog by viewModel.commandsLog.collectAsState()
 
     val scope = rememberCoroutineScope()
@@ -131,9 +138,10 @@ fun DashboardScreen(
     var selectedReportDevice by remember { mutableStateOf<Device?>(null) }
     
     // Persistent map state across tab transitions to enable buttery smooth fly-to animations
-    var persistentMapCenterLat by remember { mutableStateOf(9.0192) }
-    var persistentMapCenterLng by remember { mutableStateOf(38.7525) }
-    var persistentMapZoom by remember { mutableStateOf(15.0f) }
+    var persistentMapCenterLat by remember { mutableStateOf(8.7832) }
+    var persistentMapCenterLng by remember { mutableStateOf(38.7405) }
+    var persistentMapZoom by remember { mutableStateOf(6.0f) } // Default to Ethiopia broad zoom
+    var mapRecenterTrigger by remember { mutableStateOf(0) }
     
     // Playback Controller factors
     var isPlaybackActive by remember { mutableStateOf(false) }
@@ -144,6 +152,10 @@ fun DashboardScreen(
     var playbackRangeMode by remember { mutableStateOf("Predefined") } // "Predefined" or "Custom"
     var predefinedRange by remember { mutableStateOf("12h") } // "1h", "6h", "12h", "24h", "Today", "Yesterday"
     
+    var animatedPlaybackLat by remember { mutableStateOf<Double?>(null) }
+    var animatedPlaybackLng by remember { mutableStateOf<Double?>(null) }
+    var animatedPlaybackCourse by remember { mutableStateOf<Float?>(null) }
+
     // Calendar settings for custom dates
     var customStartCalendar by remember { 
         mutableStateOf(
@@ -162,11 +174,95 @@ fun DashboardScreen(
     var activeGeofenceAlerts by remember { mutableStateOf(emptyList<GeofenceAlert>()) }
     var geofenceAlertHistory by remember { mutableStateOf(emptyList<GeofenceAlert>()) }
 
-    var animatedPlaybackLat by remember { mutableStateOf<Double?>(null) }
-    var animatedPlaybackLng by remember { mutableStateOf<Double?>(null) }
-    var animatedPlaybackCourse by remember { mutableStateOf<Float?>(null) }
+    var lastCenteredDeviceId by remember { mutableStateOf<Long?>(null) }
+    var showDeviceDetailSheet by remember { mutableStateOf(false) }
+    var isDeviceDrawerOpen by remember { mutableStateOf(false) }
+    var drawerSearchQuery by remember { mutableStateOf("") }
+    var drawerFilterStatus by remember { mutableStateOf("ALL") }
 
-    LaunchedEffect(playbackStepIndex, routeHistory, playbackSpeedMultiplier, isPlaybackActive) {
+    LaunchedEffect(selectedDeviceId) {
+        // Reset playback controls ONLY when selected device actually changes
+        isPlaybackActive = false
+        playbackStepIndex = 0
+        playbackSpeedMultiplier = 1
+        playbackLoop = false
+        animatedPlaybackLat = null
+        animatedPlaybackLng = null
+        animatedPlaybackCourse = null
+        viewModel.clearRouteHistory()
+    }
+
+    LaunchedEffect(selectedDeviceId, realtimePositions, cachedDevices) {
+        if (selectedDeviceId == null) {
+            lastCenteredDeviceId = null
+            persistentMapCenterLat = 8.7832
+            persistentMapCenterLng = 38.7405
+            persistentMapZoom = 6.0f // Reset camera to broad Ethiopia view when no device is selected
+        } else {
+            val id = selectedDeviceId!!
+            val lat = realtimePositions[id]?.latitude ?: cachedDevices.find { it.id == id }?.latitude
+            val lng = realtimePositions[id]?.longitude ?: cachedDevices.find { it.id == id }?.longitude
+            if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
+                if (id != lastCenteredDeviceId || (persistentMapCenterLat == 8.7832 && persistentMapCenterLng == 38.7405)) {
+                    persistentMapCenterLat = lat
+                    persistentMapCenterLng = lng
+                    persistentMapZoom = 18.0f // Enhanced close-up tracking zoom level when device is selected
+                    lastCenteredDeviceId = id
+                    isCameraFollowLocked = true // Turn camera lock back on when selecting a new device
+                    mapRecenterTrigger++
+                } else if (isCameraFollowLocked) {
+                    persistentMapCenterLat = lat
+                    persistentMapCenterLng = lng
+                    mapRecenterTrigger++
+                }
+            }
+        }
+    }
+
+    val resetMapState = remember {
+        {
+            // Stop intervals
+            isPlaybackActive = false
+            
+            // Reset UI controls
+            playbackStepIndex = 0
+            playbackSpeedMultiplier = 1
+            playbackLoop = false
+            animatedPlaybackLat = null
+            animatedPlaybackLng = null
+            animatedPlaybackCourse = null
+            isCameraFollowLocked = true
+            
+            // Clear pending requests to prevent race conditions
+            viewModel.abortController.abortAll()
+
+            // Clear map overlays
+            viewModel.selectDevice(null)
+            viewModel.clearRouteHistory()
+            searchQuery = ""
+            activeGeofenceAlerts = emptyList()
+        }
+    }
+
+    LaunchedEffect(playbackRangeMode) {
+        viewModel.abortController.abort("playback_history")
+    }
+
+
+
+    LaunchedEffect(routeHistory) {
+        if (routeHistory.isNotEmpty()) {
+            val fitResult = com.example.ui.map.calculatePositionBoundsFit(routeHistory)
+            if (fitResult != null) {
+                persistentMapCenterLat = fitResult.first
+                persistentMapCenterLng = fitResult.second
+                persistentMapZoom = fitResult.third
+                mapRecenterTrigger++
+            }
+        }
+    }
+
+    LaunchedEffect(playbackStepIndex, routeHistory) {
         if (routeHistory.isEmpty()) {
             animatedPlaybackLat = null
             animatedPlaybackLng = null
@@ -174,35 +270,9 @@ fun DashboardScreen(
             return@LaunchedEffect
         }
         val target = routeHistory.getOrNull(playbackStepIndex) ?: return@LaunchedEffect
-        
-        val startLat = animatedPlaybackLat ?: target.latitude
-        val startLng = animatedPlaybackLng ?: target.longitude
-        val startCourse = animatedPlaybackCourse ?: target.course.toFloat()
-        
-        val duration = if (isPlaybackActive) {
-            (800 / playbackSpeedMultiplier).coerceAtLeast(100)
-        } else {
-            300
-        }
-        
-        val startTime = System.currentTimeMillis()
-        while (true) {
-            val elapsed = System.currentTimeMillis() - startTime
-            val fraction = (elapsed.toFloat() / duration).coerceIn(0f, 1f)
-            
-            val lat = startLat + (target.latitude - startLat) * fraction
-            val lng = startLng + (target.longitude - startLng) * fraction
-            
-            val diff = ((target.course.toFloat() - startCourse + 180 + 360) % 360) - 180
-            val course = (startCourse + diff * fraction + 360) % 360
-
-            animatedPlaybackLat = lat
-            animatedPlaybackLng = lng
-            animatedPlaybackCourse = course
-            
-            if (fraction >= 1f) break
-            kotlinx.coroutines.delay(16) // ~60fps
-        }
+        animatedPlaybackLat = target.latitude
+        animatedPlaybackLng = target.longitude
+        animatedPlaybackCourse = target.course.toFloat()
     }
 
     LaunchedEffect(selectedDeviceId, realtimePositions, geofences, isPlaybackActive, playbackStepIndex, routeHistory, animatedPlaybackLat, animatedPlaybackLng) {
@@ -285,6 +355,7 @@ fun DashboardScreen(
     var newDeviceName by remember { mutableStateOf("") }
     var newDeviceImei by remember { mutableStateOf("") }
     var newDeviceCategory by remember { mutableStateOf("Car") }
+    var newDevicePlate by remember { mutableStateOf("") }
 
     // Clear feedbacks automatically
     LaunchedEffect(feedbackMessage) {
@@ -317,79 +388,70 @@ fun DashboardScreen(
     // Main scaffold design using Dark Mode colors
     Scaffold(
         topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    if (currentTab == 3 || currentTab == 4 || currentTab == 6 || currentTab == 7) {
-                        IconButton(onClick = { currentTab = 5 }) {
-                            Icon(
-                                imageVector = Icons.Default.ArrowBack,
-                                contentDescription = "Back to Settings",
-                                tint = Color.White
-                            )
-                        }
-                    }
-                },
-                title = {
-                    Column {
-                        Text(
-                            text = "MightyGPS Fleet Control",
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color(0xFF60A5FA)
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (isSyncing) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .background(
-                                            Color(0xFF60A5FA),
-                                            shape = CircleShape
-                                        )
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Refreshing Assets...",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF60A5FA),
-                                    fontWeight = FontWeight.Bold
-                                )
-                            } else {
-                                // Websocket connection status indicator
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .background(
-                                            if (isSocketConnected) Color(0xFF10B981) else Color(0xFFEF4444),
-                                            shape = CircleShape
-                                        )
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = if (isSocketConnected) "Live Telemetry Connected" else "Reconnecting Gateway",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF94A3B8)
+            if (currentTab != 1 && currentTab != 2) {
+                TopAppBar(
+                    navigationIcon = {
+                        if (currentTab == 3 || currentTab == 4 || currentTab == 6 || currentTab == 7) {
+                            IconButton(onClick = { currentTab = 5 }) {
+                                Icon(
+                                    imageVector = Icons.Default.ArrowBack,
+                                    contentDescription = "Back to Settings",
+                                    tint = Color.White
                                 )
                             }
                         }
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { viewModel.fetchInitialState() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Sync Fleet", tint = Color.LightGray)
-                    }
-                    IconButton(onClick = { 
-                        viewModel.logout()
-                        onLogout()
-                    }) {
-                        Icon(Icons.Default.ExitToApp, contentDescription = "Log Out", tint = Color(0xFFEF4444))
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xFF0F172A),
-                    titleContentColor = Color.White
+                    },
+                    title = {
+                        Column {
+                            Text(
+                                text = if (currentTab == 0) "Fleet Reports" else if (currentTab == 5) "Settings & Preferences" else "MightyGPS Fleet Control",
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color(0xFF60A5FA)
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isSyncing) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .background(
+                                                Color(0xFF60A5FA),
+                                                shape = CircleShape
+                                            )
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Refreshing Assets...",
+                                        fontSize = 10.sp,
+                                        color = Color(0xFF60A5FA),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                } else {
+                                    // Websocket connection status indicator
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .background(
+                                                if (isSocketConnected) Color(0xFF10B981) else Color(0xFFEF4444),
+                                                shape = CircleShape
+                                            )
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (isSocketConnected) "Live Telemetry Connected" else "Reconnecting Gateway",
+                                        fontSize = 10.sp,
+                                        color = Color(0xFF94A3B8)
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color(0xFF0F172A),
+                        titleContentColor = Color.White
+                    )
                 )
-            )
+            }
         },
         bottomBar = {
             NavigationBar(
@@ -720,2925 +782,205 @@ fun DashboardScreen(
                 // TAB CONTENTS
                 when (currentTab) {
                     0 -> {
-                        // TAB 0: REPORTING PANEL AND DEVICE DIRECTORY
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp)
-                        ) {
-                            val activeReportDev = selectedReportDevice
-                            if (activeReportDev != null) {
-                                val position = realtimePositions[activeReportDev.id]
-                                DeviceReportPage(
-                                    device = activeReportDev,
-                                    position = position,
-                                    onBack = { selectedReportDevice = null },
-                                    onViewOnMap = {
-                                        viewModel.selectDevice(activeReportDev.id)
-                                        currentTab = 1
-                                    },
-                                    onViewPlayback = {
-                                        viewModel.selectDevice(activeReportDev.id)
-                                        currentTab = 2
-                                    },
-                                    appLanguage = viewModel.appLanguage.value
-                                )
-                            } else {
-                                Column(
-                                    modifier = Modifier.fillMaxSize()
-                                ) {
-                                    // High Polish Status Scorecards list
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(bottom = 16.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        val total = devices.size
-                                        val online = devices.count { it.status == "online" }
-                                        val offline = devices.count { it.status == "offline" }
-
-                                        TrackScorecard(title = "Total Active", count = total.toString(), color = Color(0xFF3B82F6), modifier = Modifier.weight(1f))
-                                        TrackScorecard(title = "Moving/Online", count = online.toString(), color = Color(0xFF10B981), modifier = Modifier.weight(1f))
-                                        TrackScorecard(title = "Parked/Offline", count = offline.toString(), color = Color(0xFFEF4444), modifier = Modifier.weight(1f))
-                                    }
-
-                                    // Search bar inputs
-                                    OutlinedTextField(
-                                        value = searchQuery,
-                                        onValueChange = { searchQuery = it },
-                                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray) },
-                                        placeholder = { Text("Filter asset name, unique IMEI...") },
-                                        singleLine = true,
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedTextColor = Color.White,
-                                            unfocusedTextColor = Color.White,
-                                            focusedContainerColor = Color(0xFF0F172A),
-                                            unfocusedContainerColor = Color(0xFF0F172A),
-                                            focusedBorderColor = Color(0xFF2563EB),
-                                            unfocusedBorderColor = Color(0xFF1E293B)
-                                        ),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(bottom = 12.dp)
-                                    )
-
-                                    // Unified Offline support notice if data from database cache is shown
-                                    if (devices.isEmpty() && cachedDevices.isNotEmpty()) {
-                                        Card(
-                                            colors = CardDefaults.cardColors(containerColor = Color(0x33F59E0B)),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(bottom = 12.dp)
-                                        ) {
-                                            Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(16.dp))
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text("Network offline. Loading local secure cached database coordinates.", fontSize = 11.sp, color = Color(0xFFFDE68A))
-                                            }
-                                        }
-                                    }
-
-                                    // Rendering the actual list elements
-                                    if (devices.isEmpty() && cachedDevices.isEmpty()) {
-                                        Box(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .fillMaxWidth(),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color.DarkGray, modifier = Modifier.size(48.dp))
-                                                Spacer(modifier = Modifier.height(12.dp))
-                                                Text("No active hardware devices configured.", color = Color.Gray, fontSize = 13.sp)
-                                                Text("Click the (+) FAB button to commission this fleet's first asset tracker.", color = Color.Gray, fontSize = 11.sp)
-                                            }
-                                        }
-                                    } else {
-                                        val filteredDevices = devices.filter {
-                                            it.name.contains(searchQuery, ignoreCase = true) || it.uniqueId.contains(searchQuery, ignoreCase = true)
-                                        }
-
-                                        LazyColumn(
-                                            modifier = Modifier.weight(1f),
-                                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                                        ) {
-                                            if (filteredDevices.isNotEmpty()) {
-                                                items(filteredDevices) { device ->
-                                                    val position = realtimePositions[device.id]
-                                                    DeviceRow(
-                                                        device = device,
-                                                        isAdmin = viewModel.sessionManager.isAdmin,
-                                                        position = position,
-                                                        onSelect = {
-                                                            selectedReportDevice = device
-                                                        },
-                                                        onDelete = {
-                                                            viewModel.removeDevice(device.id, device.name)
-                                                        }
-                                                    )
-                                                }
-                                            } else {
-                                                // Load cached items fallback
-                                                val filteredOffline = cachedDevices.filter {
-                                                    it.name.contains(searchQuery, ignoreCase = true) || it.uniqueId.contains(searchQuery, ignoreCase = true)
-                                                }
-                                                items(filteredOffline) { cached ->
-                                                    OfflineDeviceRow(
-                                                        cached = cached,
-                                                        onSelect = {
-                                                            val dummyDev = Device(
-                                                                id = cached.id,
-                                                                name = cached.name,
-                                                                uniqueId = cached.uniqueId,
-                                                                status = "offline"
-                                                            )
-                                                            selectedReportDevice = dummyDev
-                                                        }
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                        DeviceDirectoryTab(
+                            viewModel = viewModel,
+                            devices = devices,
+                            cachedDevices = cachedDevices,
+                            realtimePositions = realtimePositions,
+                            selectedReportDevice = selectedReportDevice,
+                            onSelectReportDevice = { selectedReportDevice = it },
+                            onViewOnMap = { devId ->
+                                lastCenteredDeviceId = null
+                                viewModel.selectDevice(devId)
+                                currentTab = 1
+                            },
+                            onViewPlayback = { devId ->
+                                lastCenteredDeviceId = null
+                                viewModel.selectDevice(devId)
+                                currentTab = 2
                             }
-                        }
+                        )
                     }
 
                     1 -> {
-                        // TAB 1: FLEET TRACKING MAP & HISTORICAL PLAYBACK HUD
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            val mapMarkers = viewModel.getMapMarkers(realtimePositions, devices)
-                            
-                            // If historical playback coordinates are loaded, draw them dynamically center on that trail
-                            val activePlaybackPos = if (routeHistory.isNotEmpty() && playbackStepIndex < routeHistory.size) {
-                                routeHistory[playbackStepIndex]
-                            } else null
-
-                            val playLat = if (routeHistory.isNotEmpty() && animatedPlaybackLat != null) animatedPlaybackLat!! else activePlaybackPos?.latitude
-                            val mapCenterLat = playLat ?: selectedDeviceId?.let { id ->
-                                realtimePositions[id]?.latitude ?: cachedDevices.find { it.id == id }?.latitude
-                            } ?: persistentMapCenterLat
-
-                            val playLng = if (routeHistory.isNotEmpty() && animatedPlaybackLng != null) animatedPlaybackLng!! else activePlaybackPos?.longitude
-                            val playCourse = if (routeHistory.isNotEmpty() && animatedPlaybackCourse != null) animatedPlaybackCourse!! else (activePlaybackPos?.course?.toFloat() ?: 0f)
-                            val mapCenterLng = playLng ?: selectedDeviceId?.let { id ->
-                                realtimePositions[id]?.longitude ?: cachedDevices.find { it.id == id }?.longitude
-                            } ?: persistentMapCenterLng
-
-                            // Render dynamic custom SlippyMap
-                            SlippyMap(
-                                modifier = Modifier.fillMaxSize(),
-                                initialCenterLat = if (playLat != null) mapCenterLat else persistentMapCenterLat,
-                                initialCenterLng = if (playLng != null) mapCenterLng else persistentMapCenterLng,
-                                initialZoom = if (playLat != null) 15f else persistentMapZoom,
-                                markers = if (playLat != null && activePlaybackPos != null) {
-                                    listOf(
-                                        com.example.ui.map.MapMarker(
-                                            id = 99999 + activePlaybackPos.deviceId,
-                                            name = "Playback (Asset ${activePlaybackPos.deviceId})",
-                                            latitude = playLat!!,
-                                            longitude = playLng!!,
-                                            course = playCourse,
-                                            status = "online",
-                                            speedKmh = activePlaybackPos.speedKmh,
-                                            altitude = activePlaybackPos.altitude,
-                                            lastUpdate = activePlaybackPos.deviceTime,
-                                            address = activePlaybackPos.address,
-                                            accuracy = activePlaybackPos.accuracy
-                                        )
-                                    )
-                                } else mapMarkers,
-                                routePath = routeHistory,
-                                selectedMarkerId = if (activePlaybackPos != null) 99999 + activePlaybackPos.deviceId else selectedDeviceId,
-                                onMarkerClick = { id ->
-                                    if (id == -1L) {
-                                        viewModel.selectDevice(null)
-                                    } else if (id < 99999) {
-                                        viewModel.selectDevice(id)
-                                    }
-                                },
-                                isDarkMode = true,
-                                mapStyle = mapProviderStyle,
-                                markerLabelType = markerLabelStyle,
-                                markerIconStyle = markerIconStyle,
-                                customIconUri = customIconUri,
-                                geofences = geofences,
-                                onViewportChanged = { lat, lng, zm ->
-                                    if (activePlaybackPos == null) {
-                                        persistentMapCenterLat = lat
-                                        persistentMapCenterLng = lng
-                                        persistentMapZoom = zm
-                                    }
+                        MapTab(
+                            viewModel = viewModel,
+                            devices = devices,
+                            cachedDevices = cachedDevices,
+                            realtimePositions = realtimePositions,
+                            selectedDeviceId = selectedDeviceId,
+                            onSelectDevice = { devId ->
+                                if (devId == null) {
+                                    viewModel.selectDevice(null)
+                                    showDeviceDetailSheet = false
+                                } else {
+                                    lastCenteredDeviceId = null
+                                    viewModel.selectDevice(devId)
+                                    showDeviceDetailSheet = true
                                 }
-                            )
-
-                            // Floating Map Style/Control Layer Overlay
-                            MapStyleControlLayer(
-                                mapProviderStyle = mapProviderStyle,
-                                onStyleSelected = { viewModel.setMapProviderStyle(it) },
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(16.dp)
-                            )
-
-                            // Floating Recenter Map Button
-                            IconButton(
-                                onClick = {
-                                    val targetLat: Double? = selectedDeviceId?.let { id ->
-                                        realtimePositions[id]?.latitude ?: cachedDevices.find { it.id == id }?.latitude
-                                    } ?: realtimePositions.values.firstOrNull()?.latitude ?: cachedDevices.firstOrNull()?.latitude
-                                    
-                                    val targetLng: Double? = selectedDeviceId?.let { id ->
-                                        realtimePositions[id]?.longitude ?: cachedDevices.find { it.id == id }?.longitude
-                                    } ?: realtimePositions.values.firstOrNull()?.longitude ?: cachedDevices.firstOrNull()?.longitude
-                                    
-                                    if (targetLat != null && targetLng != null) {
-                                        persistentMapCenterLat = targetLat
-                                        persistentMapCenterLng = targetLng
-                                        persistentMapZoom = 15.0f
-                                    } else {
-                                        persistentMapCenterLat = 9.0192
-                                        persistentMapCenterLng = 38.7525
-                                        persistentMapZoom = 15.0f
-                                    }
-                                    viewModel.triggerFeedback("Map view re-centered to active fleet")
-                                },
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(16.dp)
-                                    .size(44.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF0F172A))
-                                    .border(1.dp, Color(0xFF3B82F6).copy(alpha = 0.5f), CircleShape)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.GpsFixed,
-                                    contentDescription = "Recenter Map",
-                                    tint = Color(0xFF3B82F6),
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-
-                            // Overlay: Collapsible details HUD on top of map
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .align(Alignment.BottomCenter)
-                                    .padding(16.dp)
-                            ) {
-                                Card(
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xEC0B132B)),
-                                    shape = MaterialTheme.shapes.medium,
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
-                                ) {
-                                    Column(modifier = Modifier.padding(16.dp)) {
-                                        if (selectedDeviceId != null) {
-                                            val dev = devices.find { it.id == selectedDeviceId }
-                                                ?: devices.firstOrNull() // fallback
-                                            val pos = realtimePositions[dev?.id]
-                                            
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        text = dev?.name ?: "Unknown Vehicle",
-                                                        fontWeight = FontWeight.ExtraBold,
-                                                        color = Color.White,
-                                                        fontSize = 16.sp
-                                                    )
-                                                    Text(
-                                                        text = "Telemetry ID: ${dev?.uniqueId ?: "Unknown"}",
-                                                        color = Color(0xFF64748B),
-                                                        fontSize = 11.sp
-                                                    )
-                                                }
-                                                // Speed badge
-                                                Card(
-                                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
-                                                ) {
-                                                    Text(
-                                                        text = "${String.format("%.1f", pos?.speedKmh ?: 0.0)} km/h",
-                                                        color = Color(0xFF10B981),
-                                                        fontWeight = FontWeight.Bold,
-                                                        fontSize = 13.sp,
-                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                                    )
-                                                }
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                IconButton(onClick = { viewModel.selectDevice(null) }) {
-                                                    Icon(Icons.Default.Close, contentDescription = "Deselect", tint = Color.Gray)
-                                                }
-                                            }
-
-                                            HorizontalDivider(color = Color(0xFF1E293B), modifier = Modifier.padding(vertical = 10.dp))
-
-                                            // Action commands block
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                // Load 12h history command
-                                                Button(
-                                                    onClick = {
-                                                        dev?.let { viewModel.loadPlaybackHistory(it.id) }
-                                                    },
-                                                    enabled = !historyLoading,
-                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                                                    modifier = Modifier.weight(1f)
-                                                ) {
-                                                    if (historyLoading) {
-                                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
-                                                    } else {
-                                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF3B82F6))
-                                                            Spacer(modifier = Modifier.width(4.dp))
-                                                            Text("Historical Playback", fontSize = 11.sp, color = Color.White)
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // Playback interface active display
-                                            if (routeHistory.isNotEmpty()) {
-                                                Column(modifier = Modifier.padding(top = 12.dp)) {
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
-                                                    ) {
-                                                        IconButton(onClick = { isPlaybackActive = !isPlaybackActive }) {
-                                                            Icon(
-                                                                if (isPlaybackActive) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                                                contentDescription = "Play/Pause",
-                                                                tint = Color(0xFF3B82F6)
-                                                            )
-                                                        }
-                                                        Text(
-                                                            text = "Position ${playbackStepIndex + 1}/${routeHistory.size} - Speed: ${String.format("%.1f", routeHistory.getOrNull(playbackStepIndex)?.speedKmh ?: 0.0)} km/h",
-                                                            fontSize = 11.sp,
-                                                            color = Color.White
-                                                        )
-                                                        TextButton(onClick = {
-                                                            isPlaybackActive = false
-                                                            playbackStepIndex = 0
-                                                            viewModel.loadPlaybackHistory(dev?.id ?: -1) // clear or reset
-                                                        }) {
-                                                            Text("Reset", fontSize = 11.sp)
-                                                         }
-                                                         Spacer(modifier = Modifier.width(4.dp))
-                                                         TextButton(onClick = {
-                                                             isPlaybackActive = false
-                                                             playbackStepIndex = 0
-                                                             viewModel.clearRouteHistory()
-                                                         }) {
-                                                             Text("Close", fontSize = 11.sp, color = Color(0xFFEF4444))
-                                                        }
-                                                    }
-                                                    
-                                                    Slider(
-                                                        value = playbackStepIndex.toFloat(),
-                                                        onValueChange = {
-                                                            isPlaybackActive = false
-                                                            playbackStepIndex = it.toInt()
-                                                        },
-                                                        valueRange = 0f..(routeHistory.size - 1).toFloat().coerceAtLeast(1f),
-                                                        colors = SliderDefaults.colors(
-                                                            thumbColor = Color(0xFF3B82F6),
-                                                            activeTrackColor = Color(0xFF3B82F6),
-                                                            inactiveTrackColor = Color(0xFF1E293B)
-                                                        )
-                                                    )
-                                                }
-                                            }
-                                        } else {
-                                            // Bottom Up Active Fleet Scroller when no device is selected
-                                            var isFleetScrollerExpanded by remember { mutableStateOf(false) }
-                                            var scrollerSearchQuery by remember { mutableStateOf("") }
-
-                                            Column(
-                                                modifier = Modifier.fillMaxWidth()
-                                            ) {
-                                                // Tab Header to slide/click to toggle
-                                                Card(
-                                                    colors = CardDefaults.cardColors(containerColor = Color(0xEC030712)),
-                                                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .clickable { isFleetScrollerExpanded = !isFleetScrollerExpanded }
-                                                ) {
-                                                    Column(
-                                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                                        modifier = Modifier
-                                                            .fillMaxWidth()
-                                                            .padding(vertical = 10.dp, horizontal = 16.dp)
-                                                    ) {
-                                                        // Small drag handle visual indicator
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .size(width = 40.dp, height = 4.dp)
-                                                                .background(Color.Gray, shape = RoundedCornerShape(2.dp))
-                                                        )
-                                                        Spacer(modifier = Modifier.height(8.dp))
-                                                        Row(
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                                            verticalAlignment = Alignment.CenterVertically
-                                                        ) {
-                                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                                Icon(Icons.Default.List, contentDescription = null, tint = Color(0xFF10B981))
-                                                                Spacer(modifier = Modifier.width(8.dp))
-                                                                Text(
-                                                                    text = "Active Fleet Gateway Scroller",
-                                                                    color = Color.White,
-                                                                    fontWeight = FontWeight.Bold,
-                                                                    fontSize = 14.sp
-                                                                 )
-                                                            }
-                                                            val deviceCount = if (devices.isNotEmpty()) devices.size else cachedDevices.size
-                                                            Text(
-                                                                text = "$deviceCount Devices",
-                                                                color = Color(0xFF10B981),
-                                                                fontWeight = FontWeight.Bold,
-                                                                fontSize = 12.sp,
-                                                                modifier = Modifier
-                                                                    .background(Color(0x3310B981), RoundedCornerShape(12.dp))
-                                                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                                                            )
-                                                        }
-                                                    }
-                                                }
-
-                                                AnimatedVisibility(visible = isFleetScrollerExpanded) {
-                                                    Card(
-                                                        colors = CardDefaults.cardColors(containerColor = Color(0xEC030712)),
-                                                        shape = RoundedCornerShape(0.dp),
-                                                        modifier = Modifier
-                                                            .fillMaxWidth()
-                                                            .height(280.dp)
-                                                    ) {
-                                                        Column(modifier = Modifier.padding(12.dp)) {
-                                                            // Search bar inside bottom up scroller
-                                                            OutlinedTextField(
-                                                                value = scrollerSearchQuery,
-                                                                onValueChange = { scrollerSearchQuery = it },
-                                                                placeholder = { Text("Search fleet asset...", color = Color.Gray, fontSize = 12.sp) },
-                                                                singleLine = true,
-                                                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray) },
-                                                                modifier = Modifier
-                                                                    .fillMaxWidth()
-                                                                    .padding(bottom = 12.dp),
-                                                                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
-                                                                colors = OutlinedTextFieldDefaults.colors(
-                                                                    focusedBorderColor = Color(0xFF10B981),
-                                                                    unfocusedBorderColor = Color(0xFF374151)
-                                                                )
-                                                            )
-
-                                                            val activeList = if (devices.isNotEmpty()) devices else cachedDevices.map { cached ->
-                                                                com.example.data.model.Device(id = cached.id, name = cached.name, uniqueId = cached.uniqueId, status = cached.status, lastUpdate = cached.lastUpdate, category = cached.category)
-                                                            }
-
-                                                            val filteredActive = activeList.filter {
-                                                                it.name.contains(scrollerSearchQuery, ignoreCase = true) || it.uniqueId.contains(scrollerSearchQuery, ignoreCase = true)
-                                                            }
-
-                                                            if (filteredActive.isEmpty()) {
-                                                                Box(
-                                                                    modifier = Modifier.fillMaxSize(),
-                                                                    contentAlignment = Alignment.Center
-                                                                ) {
-                                                                    Text("No devices matching search", color = Color.Gray, fontSize = 12.sp)
-                                                                }
-                                                            } else {
-                                                                LazyColumn(
-                                                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                                                    modifier = Modifier.fillMaxSize()
-                                                                ) {
-                                                                    items(filteredActive) { device ->
-                                                                        val position = realtimePositions[device.id]
-                                                                        Row(
-                                                                            modifier = Modifier
-                                                                                .fillMaxWidth()
-                                                                                .background(Color(0xFF1F2937), RoundedCornerShape(8.dp))
-                                                                                .clickable {
-                                                                                    viewModel.selectDevice(device.id)
-                                                                                    isFleetScrollerExpanded = false
-                                                                                }
-                                                                                .padding(10.dp),
-                                                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                                                            verticalAlignment = Alignment.CenterVertically
-                                                                        ) {
-                                                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                                                Icon(
-                                                                                    Icons.Default.LocationOn,
-                                                                                    contentDescription = null,
-                                                                                    tint = if (device.status == "online") Color(0xFF10B981) else Color(0xFF9CA3AF),
-                                                                                    modifier = Modifier.size(18.dp)
-                                                                                )
-                                                                                Spacer(modifier = Modifier.width(8.dp))
-                                                                                Column {
-                                                                                    Text(device.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                                                                    Text("IMEI: ${device.uniqueId}", color = Color.Gray, fontSize = 11.sp)
-                                                                                }
-                                                                            }
-
-                                                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                                                if (position != null) {
-                                                                                    Text(
-                                                                                        text = "${String.format("%.1f", position.speedKmh)} km/h",
-                                                                                        color = Color(0xFF10B981),
-                                                                                        fontSize = 12.sp,
-                                                                                        fontWeight = FontWeight.Bold
-                                                                                    )
-                                                                                } else if (device.id != null) {
-                                                                                    val cachedSpeed = cachedDevices.find { it.id == device.id }?.speed ?: 0.0
-                                                                                    Text(
-                                                                                        text = "${String.format("%.1f", cachedSpeed)} km/h",
-                                                                                        color = Color.Gray,
-                                                                                        fontSize = 12.sp
-                                                                                    )
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                
-                                                if (!isFleetScrollerExpanded) {
-                                                    Spacer(modifier = Modifier.height(8.dp))
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.Center,
-                                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
-                                                    ) {
-                                                        Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFF3B82F6), modifier = Modifier.size(14.dp))
-                                                        Spacer(modifier = Modifier.width(6.dp))
-                                                        Text(
-                                                            text = "Tap scroller title above to browse active fleet assets on the map.",
-                                                            fontSize = 10.sp,
-                                                            color = Color.LightGray
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                            },
+                            routeHistory = routeHistory,
+                            isPlaybackActive = isPlaybackActive,
+                            onTogglePlayback = {
+                                if (!isPlaybackActive && routeHistory.isNotEmpty() && playbackStepIndex >= routeHistory.size - 1) {
+                                    playbackStepIndex = 0
                                 }
+                                isPlaybackActive = !isPlaybackActive
+                            },
+                            playbackStepIndex = playbackStepIndex,
+                            onUpdatePlaybackStepIndex = {
+                                isPlaybackActive = false
+                                playbackStepIndex = it
+                            },
+                            animatedPlaybackLat = animatedPlaybackLat,
+                            animatedPlaybackLng = animatedPlaybackLng,
+                            animatedPlaybackCourse = animatedPlaybackCourse,
+                            persistentMapCenterLat = persistentMapCenterLat,
+                            persistentMapCenterLng = persistentMapCenterLng,
+                            persistentMapZoom = persistentMapZoom,
+                            mapRecenterTrigger = mapRecenterTrigger,
+                            isCameraFollowLocked = isCameraFollowLocked,
+                            onCameraFollowLockChanged = { isCameraFollowLocked = it },
+                            onViewportChanged = { lat, lng, zm ->
+                                persistentMapCenterLat = lat
+                                persistentMapCenterLng = lng
+                                persistentMapZoom = zm
+                            },
+                            onUserInteraction = {
+                                isCameraFollowLocked = false
+                                lastCenteredDeviceId = null
+                            },
+                            mapProviderStyle = mapProviderStyle,
+                            markerLabelStyle = markerLabelStyle,
+                            markerIconStyle = markerIconStyle,
+                            customIconUri = customIconUri,
+                            geofences = geofences,
+                            isGeofenceLayerVisible = isGeofenceLayerVisible,
+                            colorMoving = colorMoving,
+                            colorIdle = colorIdle,
+                            colorOffline = colorOffline,
+                            markerTriggerMode = markerTriggerMode,
+                            infoCardFields = infoCardFields,
+                            historyLoading = historyLoading,
+                            onResetMapState = { resetMapState() },
+                            onOpenFleetDrawer = { isDeviceDrawerOpen = true },
+                            onShowDeviceDetailSheet = { showDeviceDetailSheet = true },
+                            onLoadPlaybackHistory = { devId ->
+                                isPlaybackActive = false
+                                playbackStepIndex = 0
+                                playbackSpeedMultiplier = 1
+                                playbackLoop = false
+                                animatedPlaybackLat = null
+                                animatedPlaybackLng = null
+                                animatedPlaybackCourse = null
+                                viewModel.loadPlaybackHistory(devId)
+                            },
+                            onClearRouteHistory = {
+                                isPlaybackActive = false
+                                playbackStepIndex = 0
+                                viewModel.clearRouteHistory()
+                            },
+                            onCenterOnCoords = { lat, lng, zm ->
+                                persistentMapCenterLat = lat
+                                persistentMapCenterLng = lng
+                                persistentMapZoom = zm
+                                mapRecenterTrigger++
                             }
-                        }
+                        )
                     }
 
                     2 -> {
-                        // TAB 2: POWERFUL TELEMATIC PLAYBACK AND HISTORICAL TRAIL PANEL
-                        var playbackSelectedDeviceId by remember(selectedDeviceId) { mutableStateOf<Long?>(selectedDeviceId) }
-                        var playbackDetailTab by remember { mutableStateOf(0) } // 0 = Trip Summary, 1 = Raw Logs
-                        var isQueryConfigExpanded by remember(routeHistory.isEmpty()) { mutableStateOf(routeHistory.isEmpty()) }
-                        val context = LocalContext.current
-                        val dateTimeFormatter = remember { SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault()) }
-
-                        // Distance calculation nested lambdas
-                        val calculateDistance: (Double, Double, Double, Double) -> Double = { lat1, lon1, lat2, lon2 ->
-                            val r = 6371.0 // earth radius in km
-                            val dLat = java.lang.Math.toRadians(lat2 - lat1)
-                            val dLon = java.lang.Math.toRadians(lon2 - lon1)
-                            val a = java.lang.Math.sin(dLat / 2.0) * java.lang.Math.sin(dLat / 2.0) +
-                                    java.lang.Math.cos(java.lang.Math.toRadians(lat1)) * java.lang.Math.cos(java.lang.Math.toRadians(lat2)) *
-                                    java.lang.Math.sin(dLon / 2.0) * java.lang.Math.sin(dLon / 2.0)
-                            val c = 2.0 * java.lang.Math.atan2(java.lang.Math.sqrt(a), java.lang.Math.sqrt(1.0 - a))
-                            r * c
-                        }
-
-                        val calculateCumulativeDistance: (List<Position>, Int) -> Double = { trail, endIndex ->
-                            var dist = 0.0
-                            for (i in 0 until endIndex) {
-                                val p1 = trail.getOrNull(i)
-                                val p2 = trail.getOrNull(i + 1)
-                                if (p1 != null && p2 != null) {
-                                    dist += calculateDistance(p1.latitude, p1.longitude, p2.latitude, p2.longitude)
-                                }
-                            }
-                            dist
-                        }
-
-                        // Date and Time picker triggers
-                        val selectDate = { isStart: Boolean ->
-                            val currentCal = if (isStart) customStartCalendar else customEndCalendar
-                            val datePickerDialog = android.app.DatePickerDialog(
-                                context,
-                                { _, year, month, dayOfMonth ->
-                                    val newCal = java.util.Calendar.getInstance().apply {
-                                        time = currentCal.time
-                                        set(java.util.Calendar.YEAR, year)
-                                        set(java.util.Calendar.MONTH, month)
-                                        set(java.util.Calendar.DAY_OF_MONTH, dayOfMonth)
-                                    }
-                                    if (isStart) {
-                                        customStartCalendar = newCal
-                                    } else {
-                                        customEndCalendar = newCal
-                                    }
-                                    isPlaybackActive = false
-                                    playbackStepIndex = 0
-                                },
-                                currentCal.get(java.util.Calendar.YEAR),
-                                currentCal.get(java.util.Calendar.MONTH),
-                                currentCal.get(java.util.Calendar.DAY_OF_MONTH)
-                            )
-                            datePickerDialog.show()
-                        }
-
-                        val selectTime = { isStart: Boolean ->
-                            val currentCal = if (isStart) customStartCalendar else customEndCalendar
-                            val timePickerDialog = android.app.TimePickerDialog(
-                                context,
-                                { _, hourOfDay, minute ->
-                                    val newCal = java.util.Calendar.getInstance().apply {
-                                        time = currentCal.time
-                                        set(java.util.Calendar.HOUR_OF_DAY, hourOfDay)
-                                        set(java.util.Calendar.MINUTE, minute)
-                                        set(java.util.Calendar.SECOND, 0)
-                                    }
-                                    if (isStart) {
-                                        customStartCalendar = newCal
-                                    } else {
-                                        customEndCalendar = newCal
-                                    }
-                                    isPlaybackActive = false
-                                    playbackStepIndex = 0
-                                },
-                                currentCal.get(java.util.Calendar.HOUR_OF_DAY),
-                                currentCal.get(java.util.Calendar.MINUTE),
-                                true // 24-hour format
-                            )
-                            timePickerDialog.show()
-                        }
-
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            if (!isQueryConfigExpanded && routeHistory.isNotEmpty()) {
-                                // Sophisticated Collapsed Config Bar
-                                Card(
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                    border = BorderStroke(1.dp, Color(0xFF1E293B)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        val currentDeviceObj = devices.find { it.id == playbackSelectedDeviceId }
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(32.dp)
-                                                    .background(Color(0xFF1E293B), CircleShape),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = if (currentDeviceObj?.category == "truck") Icons.Default.Place else Icons.Default.LocationOn,
-                                                    contentDescription = null,
-                                                    tint = Color(0xFF3B82F6),
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                            }
-                                            Spacer(modifier = Modifier.width(10.dp))
-                                            Column {
-                                                Text(
-                                                    text = currentDeviceObj?.name ?: "Selected Asset",
-                                                    color = Color.White,
-                                                    fontSize = 13.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                                val rangeLabel = if (playbackRangeMode == "Predefined") {
-                                                    "Quick Period: $predefinedRange"
-                                                } else {
-                                                    val df = SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault())
-                                                    "${df.format(customStartCalendar.time)} - ${df.format(customEndCalendar.time)}"
-                                                }
-                                                Text(
-                                                    text = rangeLabel,
-                                                    color = Color.Gray,
-                                                    fontSize = 10.sp
-                                                )
-                                            }
-                                        }
-                                        
-                                        Button(
-                                            onClick = { isQueryConfigExpanded = true },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
-                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                            modifier = Modifier.height(30.dp),
-                                            shape = RoundedCornerShape(20.dp)
-                                        ) {
-                                            Text("Edit Query", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
-                                }
-                            } else {
-                                // Headers
-                                Column {
-                                Text(
-                                    text = "Fleet Historical Playback",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 18.sp
-                                )
-                                Text(
-                                    text = "Query historic breadcrumb routes and telemetry playback logs with customizable parameters.",
-                                    color = Color.Gray,
-                                    fontSize = 11.sp
-                                )
-                            }
-
-                            // Device list picker
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text(
-                                        text = "Select Asset Hardware:",
-                                        color = Color.LightGray,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(bottom = 8.dp)
-                                    )
-                                    LazyRow(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        items(devices) { dev ->
-                                            val isSelected = playbackSelectedDeviceId == dev.id
-                                            Card(
-                                                colors = CardDefaults.cardColors(
-                                                    containerColor = if (isSelected) Color(0xFF2563EB) else Color(0xFF1E293B)
-                                                ),
-                                                modifier = Modifier
-                                                    .clickable { 
-                                                        playbackSelectedDeviceId = dev.id
-                                                        isPlaybackActive = false
-                                                        playbackStepIndex = 0
-                                                    }
-                                            ) {
-                                                Row(
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                                ) {
-                                                    val catIcon = if (dev.category == "truck") {
-                                                        Icons.Default.Place
-                                                    } else {
-                                                        Icons.Default.LocationOn
-                                                    }
-                                                    Icon(
-                                                        imageVector = catIcon,
-                                                        contentDescription = null,
-                                                        tint = Color.White,
-                                                        modifier = Modifier.size(14.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.width(4.dp))
-                                                    Text(
-                                                        text = dev.name,
-                                                        color = Color.White,
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Bold
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Query parameters selection
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    // Range Type Selector
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = "Time Selection Mode:",
-                                            color = Color.LightGray,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Row(
-                                            modifier = Modifier
-                                                .background(Color(0xFF1E293B), RoundedCornerShape(20.dp))
-                                                .padding(2.dp)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(18.dp))
-                                                    .background(if (playbackRangeMode == "Predefined") Color(0xFF3B82F6) else Color.Transparent)
-                                                    .clickable { playbackRangeMode = "Predefined" }
-                                                    .padding(horizontal = 10.dp, vertical = 4.dp)
-                                            ) {
-                                                Text("Quick Periods", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                            }
-                                            Box(
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(18.dp))
-                                                    .background(if (playbackRangeMode == "Custom") Color(0xFF3B82F6) else Color.Transparent)
-                                                    .clickable { playbackRangeMode = "Custom" }
-                                                    .padding(horizontal = 10.dp, vertical = 4.dp)
-                                            ) {
-                                                Text("Custom Range", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                            }
-                                        }
-                                    }
-
-                                    Divider(color = Color(0xFF22293F), thickness = 1.dp)
-
-                                    if (playbackRangeMode == "Predefined") {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            listOf("1h", "6h", "12h", "24h", "Today", "Yesterday").forEach { range ->
-                                                val isRangeSelected = predefinedRange == range
-                                                Box(
-                                                    modifier = Modifier
-                                                        .background(
-                                                            color = if (isRangeSelected) Color(0xFF3B82F6) else Color(0xFF1E293B),
-                                                            shape = RoundedCornerShape(6.dp)
-                                                        )
-                                                        .clickable { predefinedRange = range }
-                                                        .padding(horizontal = 8.dp, vertical = 5.dp)
-                                                ) {
-                                                    Text(
-                                                        text = range,
-                                                        color = Color.White,
-                                                        fontSize = 10.sp,
-                                                        fontWeight = FontWeight.Bold
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        // Custom Date Pickers Setup
-                                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            // Start range selector row
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text("From UTC:", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                    Button(
-                                                        onClick = { selectDate(true) },
-                                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                        modifier = Modifier.height(28.dp),
-                                                        shape = RoundedCornerShape(4.dp)
-                                                    ) {
-                                                        Text(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(customStartCalendar.time), fontSize = 10.sp, color = Color.White)
-                                                    }
-                                                    Button(
-                                                        onClick = { selectTime(true) },
-                                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                        modifier = Modifier.height(28.dp),
-                                                        shape = RoundedCornerShape(4.dp)
-                                                    ) {
-                                                        Text(SimpleDateFormat("HH:mm", Locale.US).format(customStartCalendar.time), fontSize = 10.sp, color = Color.White)
-                                                    }
-                                                }
-                                            }
-
-                                            // End range selector row
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text("To UTC:", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                    Button(
-                                                        onClick = { selectDate(false) },
-                                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                        modifier = Modifier.height(28.dp),
-                                                        shape = RoundedCornerShape(4.dp)
-                                                    ) {
-                                                        Text(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(customEndCalendar.time), fontSize = 10.sp, color = Color.White)
-                                                    }
-                                                    Button(
-                                                        onClick = { selectTime(false) },
-                                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                        modifier = Modifier.height(28.dp),
-                                                        shape = RoundedCornerShape(4.dp)
-                                                    ) {
-                                                        Text(SimpleDateFormat("HH:mm", Locale.US).format(customEndCalendar.time), fontSize = 10.sp, color = Color.White)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Primary Fetch Button
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Button(
-                                            onClick = {
-                                                isPlaybackActive = false
-                                                playbackStepIndex = 0
-                                                val fromTime: java.util.Date
-                                                val toTime: java.util.Date
-                                                if (playbackRangeMode == "Predefined") {
-                                                    val now = java.util.Date()
-                                                    toTime = now
-                                                    fromTime = when (predefinedRange) {
-                                                        "1h" -> java.util.Date(now.time - 1 * 60 * 60 * 1000L)
-                                                        "6h" -> java.util.Date(now.time - 6 * 60 * 60 * 1000L)
-                                                        "12h" -> java.util.Date(now.time - 12 * 60 * 60 * 1000L)
-                                                        "24h" -> java.util.Date(now.time - 24 * 60 * 60 * 1000L)
-                                                        "Today" -> {
-                                                            java.util.Calendar.getInstance().apply {
-                                                                set(java.util.Calendar.HOUR_OF_DAY, 0)
-                                                                set(java.util.Calendar.MINUTE, 0)
-                                                                set(java.util.Calendar.SECOND, 0)
-                                                                set(java.util.Calendar.MILLISECOND, 0)
-                                                            }.time
-                                                        }
-                                                        "Yesterday" -> {
-                                                            java.util.Calendar.getInstance().apply {
-                                                                add(java.util.Calendar.DAY_OF_YEAR, -1)
-                                                                set(java.util.Calendar.HOUR_OF_DAY, 0)
-                                                                set(java.util.Calendar.MINUTE, 0)
-                                                                set(java.util.Calendar.SECOND, 0)
-                                                                set(java.util.Calendar.MILLISECOND, 0)
-                                                            }.time
-                                                        }
-                                                        else -> java.util.Date(now.time - 12 * 60 * 60 * 1000L)
-                                                    }
-                                                } else {
-                                                    fromTime = customStartCalendar.time
-                                                    toTime = customEndCalendar.time
-                                                }
-
-                                                playbackSelectedDeviceId?.let { id ->
-                                                    viewModel.loadPlaybackHistoryRange(id, fromTime, toTime)
-                                                }
-                                            },
-                                            enabled = playbackSelectedDeviceId != null && !historyLoading,
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
-                                            shape = RoundedCornerShape(6.dp),
-                                            modifier = if (routeHistory.isNotEmpty()) Modifier.weight(1.5f).height(36.dp) else Modifier.fillMaxWidth().height(36.dp)
-                                        ) {
-                                            if (historyLoading) {
-                                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                                            } else {
-                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                    Text("Fetch Route Coordinates", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                }
-                                            }
-                                        }
-
-                                        if (routeHistory.isNotEmpty()) {
-                                            OutlinedButton(
-                                                onClick = { isQueryConfigExpanded = false },
-                                                border = BorderStroke(1.dp, Color(0xFF475569)),
-                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.LightGray),
-                                                shape = RoundedCornerShape(6.dp),
-                                                modifier = Modifier.weight(1f).height(36.dp),
-                                                contentPadding = PaddingValues(horizontal = 4.dp)
-                                            ) {
-                                                Text("Hide Params", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            }
-
-                            // Main area: Map + Scrubber
-                            if (routeHistory.isNotEmpty() && playbackSelectedDeviceId != null) {
-                                val currentPoint = routeHistory.getOrNull(playbackStepIndex) ?: routeHistory.first()
-                                val playLat = if (animatedPlaybackLat != null) animatedPlaybackLat!! else currentPoint.latitude
-                                val playLng = if (animatedPlaybackLng != null) animatedPlaybackLng!! else currentPoint.longitude
-                                val playCourse = if (animatedPlaybackCourse != null) animatedPlaybackCourse!! else currentPoint.course.toFloat()
-                                val deviceObj = devices.find { it.id == playbackSelectedDeviceId }
-
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth(),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    // Upper portion: SlippyMap
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1.1f)
-                                            .fillMaxWidth()
-                                            .background(Color.Black, RoundedCornerShape(8.dp))
-                                    ) {
-                                        val mapCenterLat = if (isCameraFollowLocked) playLat else (routeHistory.firstOrNull()?.latitude ?: 9.0192)
-                                        val mapCenterLng = if (isCameraFollowLocked) playLng else (routeHistory.firstOrNull()?.longitude ?: 38.7525)
-
-                                        SlippyMap(
-                                            modifier = Modifier.fillMaxSize(),
-                                            initialCenterLat = mapCenterLat,
-                                            initialCenterLng = mapCenterLng,
-                                            markers = listOf(
-                                                com.example.ui.map.MapMarker(
-                                                    id = 99999 + playbackSelectedDeviceId!!,
-                                                    name = deviceObj?.name ?: "Playback",
-                                                    latitude = playLat,
-                                                    longitude = playLng,
-                                                    course = playCourse,
-                                                    status = "online",
-                                                    speedKmh = currentPoint.speedKmh,
-                                                    altitude = currentPoint.altitude,
-                                                    lastUpdate = currentPoint.deviceTime,
-                                                    address = currentPoint.address,
-                                                    accuracy = currentPoint.accuracy
-                                                )
-                                            ),
-                                            routePath = routeHistory,
-                                            selectedMarkerId = 99999 + playbackSelectedDeviceId!!,
-                                            isDarkMode = true,
-                                            mapStyle = mapProviderStyle,
-                                            markerLabelType = markerLabelStyle,
-                                            markerIconStyle = markerIconStyle,
-                                            customIconUri = customIconUri,
-                                            geofences = emptyList()
-                                        )
-
-                                        // Floating Map Style/Control Layer Overlay
-                                        MapStyleControlLayer(
-                                            mapProviderStyle = mapProviderStyle,
-                                            onStyleSelected = { viewModel.setMapProviderStyle(it) },
-                                            modifier = Modifier
-                                                .align(Alignment.TopStart)
-                                                .padding(8.dp)
-                                        )
-
-                                        // Camera settings controls
-                                        Row(
-                                            modifier = Modifier
-                                                .align(Alignment.TopEnd)
-                                                .padding(8.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            // Follow Toggle
-                                            Box(
-                                                modifier = Modifier
-                                                    .background(if (isCameraFollowLocked) Color(0xCC2563EB) else Color(0xCC0F172A), RoundedCornerShape(4.dp))
-                                                    .clickable { isCameraFollowLocked = !isCameraFollowLocked }
-                                                    .padding(horizontal = 6.dp, vertical = 4.dp)
-                                            ) {
-                                                Text(
-                                                    text = if (isCameraFollowLocked) "Cam Locked" else "Cam Unlocked",
-                                                    color = Color.White,
-                                                    fontSize = 9.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-
-                                            // Overlay badge for point coordinates
-                                            Card(
-                                                colors = CardDefaults.cardColors(containerColor = Color(0xCC0F172A))
-                                            ) {
-                                                Text(
-                                                    text = "${String.format("%.5f", currentPoint.latitude)}, ${String.format("%.5f", currentPoint.longitude)}",
-                                                    color = Color.LightGray,
-                                                    fontSize = 9.sp,
-                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    // Lower portion: Player scrubbing bar and status details
-                                    Card(
-                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Column(modifier = Modifier.padding(10.dp)) {
-                                            // Telemetry statuses
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Column {
-                                                    val timeStr = currentPoint.deviceTime ?: "No Timestamp"
-                                                    val formattedTime = if (timeStr.contains("T")) {
-                                                        timeStr.substringBefore("Z").replace("T", " ")
-                                                    } else {
-                                                        timeStr
-                                                    }
-                                                    Text(
-                                                        text = formattedTime,
-                                                        color = Color.White,
-                                                        fontSize = 12.sp,
-                                                        fontWeight = FontWeight.ExtraBold
-                                                    )
-                                                    
-                                                    val totalDist = calculateCumulativeDistance(routeHistory, playbackStepIndex)
-                                                    Text(
-                                                        text = "Telemetry crumb ${playbackStepIndex + 1}/${routeHistory.size} • Trip: ${String.format("%.2f", totalDist)} km",
-                                                        color = Color.Gray,
-                                                        fontSize = 10.sp
-                                                    )
-                                                }
-                                                // Speed & alt badges
-                                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                    Card(
-                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
-                                                    ) {
-                                                        Text(
-                                                            text = "${String.format("%.1f", currentPoint.speedKmh)} km/h",
-                                                            color = Color(0xFF10B981),
-                                                            fontSize = 11.sp,
-                                                            fontWeight = FontWeight.ExtraBold,
-                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                                                        )
-                                                    }
-                                                    Card(
-                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
-                                                    ) {
-                                                        Text(
-                                                            text = "${String.format("%.0f", currentPoint.altitude)}m Alt",
-                                                            color = Color(0xFF3B82F6),
-                                                            fontSize = 11.sp,
-                                                            fontWeight = FontWeight.ExtraBold,
-                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                                                        )
-                                                    }
-                                                }
-                                            }
-
-                                            Spacer(modifier = Modifier.height(6.dp))
-
-                                            // Slider scrubber
-                                            Slider(
-                                                value = playbackStepIndex.toFloat(),
-                                                onValueChange = {
-                                                    isPlaybackActive = false
-                                                    playbackStepIndex = it.toInt()
-                                                },
-                                                valueRange = 0f..(routeHistory.size - 1).toFloat().coerceAtLeast(1f),
-                                                colors = SliderDefaults.colors(
-                                                    thumbColor = Color(0xFF3B82F6),
-                                                    activeTrackColor = Color(0xFF3B82F6),
-                                                    inactiveTrackColor = Color(0xFF1E293B)
-                                                ),
-                                                modifier = Modifier.fillMaxWidth().height(24.dp)
-                                            )
-
-                                            // Controls Row
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Row(
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                                                ) {
-                                                    // Reset
-                                                    IconButton(
-                                                        onClick = {
-                                                            isPlaybackActive = false
-                                                            playbackStepIndex = 0
-                                                        },
-                                                        modifier = Modifier.size(32.dp)
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.Close,
-                                                            contentDescription = "Stop Reset",
-                                                            tint = Color.Gray,
-                                                            modifier = Modifier.size(16.dp)
-                                                        )
-                                                    }
-
-                                                    // Step Backward
-                                                    IconButton(
-                                                        onClick = {
-                                                            isPlaybackActive = false
-                                                            if (playbackStepIndex > 0) playbackStepIndex--
-                                                        },
-                                                        enabled = playbackStepIndex > 0,
-                                                        modifier = Modifier.size(32.dp)
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.ArrowBack,
-                                                            contentDescription = "Step Backward",
-                                                            tint = if (playbackStepIndex > 0) Color.LightGray else Color.DarkGray,
-                                                            modifier = Modifier.size(16.dp)
-                                                        )
-                                                    }
-
-                                                    // Play/Pause Action
-                                                    IconButton(
-                                                        onClick = { isPlaybackActive = !isPlaybackActive },
-                                                        modifier = Modifier
-                                                            .clip(CircleShape)
-                                                            .background(if (isPlaybackActive) Color(0xFF2563EB) else Color(0xFF1E293B))
-                                                            .size(36.dp)
-                                                    ) {
-                                                        if (isPlaybackActive) {
-                                                            Row(
-                                                                horizontalArrangement = Arrangement.spacedBy(3.dp),
-                                                                modifier = Modifier.size(10.dp),
-                                                                verticalAlignment = Alignment.CenterVertically
-                                                            ) {
-                                                                Box(modifier = Modifier.fillMaxHeight().width(3.dp).background(Color.White))
-                                                                Box(modifier = Modifier.fillMaxHeight().width(3.dp).background(Color.White))
-                                                            }
-                                                        } else {
-                                                            Icon(
-                                                                imageVector = Icons.Default.PlayArrow,
-                                                                contentDescription = "Playback Action",
-                                                                tint = Color.White,
-                                                                modifier = Modifier.size(18.dp)
-                                                            )
-                                                        }
-                                                    }
-
-                                                    // Step Forward
-                                                    IconButton(
-                                                        onClick = {
-                                                            isPlaybackActive = false
-                                                            if (playbackStepIndex < routeHistory.size - 1) playbackStepIndex++
-                                                        },
-                                                        enabled = playbackStepIndex < routeHistory.size - 1,
-                                                        modifier = Modifier.size(32.dp)
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.ArrowForward,
-                                                            contentDescription = "Step Forward",
-                                                            tint = if (playbackStepIndex < routeHistory.size - 1) Color.LightGray else Color.DarkGray,
-                                                            modifier = Modifier.size(16.dp)
-                                                        )
-                                                    }
-
-                                                    // Loop Repeat Button
-                                                    IconButton(
-                                                        onClick = { playbackLoop = !playbackLoop },
-                                                        modifier = Modifier.size(32.dp)
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.Refresh,
-                                                            contentDescription = "Loop repeat option",
-                                                            tint = if (playbackLoop) Color(0xFF3B82F6) else Color.Gray,
-                                                            modifier = Modifier.size(16.dp)
-                                                        )
-                                                    }
-                                                }
-
-                                                // Speed Multipliers
-                                                Row(
-                                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                                    modifier = Modifier.horizontalScroll(rememberScrollState())
-                                                ) {
-                                                    listOf(1, 2, 5, 10, 20, 50).forEach { s ->
-                                                        val active = playbackSpeedMultiplier == s
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .background(
-                                                                    color = if (active) Color(0xFF3B82F6) else Color(0xFF1E293B),
-                                                                    shape = RoundedCornerShape(4.dp)
-                                                                )
-                                                                .clickable { playbackSpeedMultiplier = s }
-                                                                .padding(horizontal = 6.dp, vertical = 4.dp)
-                                                        ) {
-                                                            Text(
-                                                                text = "${s}x",
-                                                                color = Color.White,
-                                                                fontSize = 9.sp,
-                                                                fontWeight = FontWeight.Bold
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Interactive Telemetry Trail Output Log List
-                                    Card(
-                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                        modifier = Modifier.fillMaxWidth().weight(0.6f)
-                                    ) {
-                                        Column(modifier = Modifier.padding(10.dp)) {
-                                            // Tab Selectors
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(bottom = 8.dp)
-                                                    .background(Color(0xFF1E293B), RoundedCornerShape(6.dp))
-                                                    .padding(2.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                            ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .clip(RoundedCornerShape(4.dp))
-                                                        .background(if (playbackDetailTab == 0) Color(0xFF3B82F6) else Color.Transparent)
-                                                        .clickable { playbackDetailTab = 0 }
-                                                        .padding(vertical = 6.dp),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Text(
-                                                        text = "Trip Summary",
-                                                        color = Color.White,
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Bold
-                                                    )
-                                                }
-                                                Box(
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .clip(RoundedCornerShape(4.dp))
-                                                        .background(if (playbackDetailTab == 1) Color(0xFF3B82F6) else Color.Transparent)
-                                                        .clickable { playbackDetailTab = 1 }
-                                                        .padding(vertical = 6.dp),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Text(
-                                                        text = "Telemetry Trail Log",
-                                                        color = Color.White,
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Bold
-                                                    )
-                                                }
-                                            }
-
-                                            if (playbackDetailTab == 0) {
-                                                // TRIP SUMMARY TAB
-                                                val segments = remember(routeHistory) { segmentRoute(routeHistory) }
-                                                if (segments.isEmpty()) {
-                                                    Box(
-                                                        modifier = Modifier.fillMaxSize(),
-                                                        contentAlignment = Alignment.Center
-                                                    ) {
-                                                        Text("No segment data recorded.", color = Color.Gray, fontSize = 11.sp)
-                                                    }
-                                                } else {
-                                                    LazyColumn(
-                                                        modifier = Modifier.fillMaxSize(),
-                                                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                                                    ) {
-                                                        items(segments.size) { idx ->
-                                                            val sg = segments[idx]
-                                                            Card(
-                                                                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-                                                                modifier = Modifier
-                                                                    .fillMaxWidth()
-                                                                    .clickable {
-                                                                        isPlaybackActive = false
-                                                                        playbackStepIndex = sg.startIndex
-                                                                    }
-                                                            ) {
-                                                                Column(modifier = Modifier.padding(10.dp)) {
-                                                                    Row(
-                                                                        modifier = Modifier.fillMaxWidth(),
-                                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                                        verticalAlignment = Alignment.CenterVertically
-                                                                    ) {
-                                                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                                                            Box(
-                                                                                modifier = Modifier
-                                                                                    .size(20.dp)
-                                                                                    .background(Color(0xFF3B82F6), CircleShape),
-                                                                                contentAlignment = Alignment.Center
-                                                                            ) {
-                                                                                Text(
-                                                                                    text = sg.segmentIndex.toString(),
-                                                                                    color = Color.White,
-                                                                                    fontSize = 10.sp,
-                                                                                    fontWeight = FontWeight.Bold
-                                                                                )
-                                                                            }
-                                                                            Spacer(modifier = Modifier.width(6.dp))
-                                                                            Text(
-                                                                                text = "Segment #${sg.segmentIndex}",
-                                                                                color = Color.White,
-                                                                                fontSize = 12.sp,
-                                                                                fontWeight = FontWeight.Bold
-                                                                            )
-                                                                        }
-                                                                        
-                                                                        Box(
-                                                                            modifier = Modifier
-                                                                                .background(Color(0xFF10B981), RoundedCornerShape(4.dp))
-                                                                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                                                                        ) {
-                                                                            Text(
-                                                                                text = sg.durationStr,
-                                                                                color = Color.White,
-                                                                                fontSize = 10.sp,
-                                                                                fontWeight = FontWeight.Bold
-                                                                             )
-                                                                        }
-                                                                    }
-                                                                    
-                                                                    Spacer(modifier = Modifier.height(8.dp))
-                                                                    
-                                                                    Row(
-                                                                        modifier = Modifier.fillMaxWidth(),
-                                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                                        verticalAlignment = Alignment.CenterVertically
-                                                                    ) {
-                                                                        Column(modifier = Modifier.weight(1f)) {
-                                                                            Text("START LOCATION", color = Color(0xFF3B82F6), fontSize = 8.sp, fontWeight = FontWeight.Bold)
-                                                                            Text(
-                                                                                text = "${String.format("%.5f", sg.startLat)}, ${String.format("%.5f", sg.startLng)}",
-                                                                                color = Color.LightGray,
-                                                                                fontSize = 10.sp,
-                                                                                fontFamily = FontFamily.Monospace
-                                                                            )
-                                                                            Text(sg.startTime, color = Color.Gray, fontSize = 9.sp)
-                                                                        }
-                                                                        
-                                                                        Icon(
-                                                                            imageVector = Icons.Default.ArrowForward,
-                                                                            contentDescription = null,
-                                                                            tint = Color.Gray,
-                                                                            modifier = Modifier.padding(horizontal = 8.dp).size(16.dp)
-                                                                        )
-                                                                        
-                                                                        Column(
-                                                                            modifier = Modifier.weight(1f),
-                                                                            horizontalAlignment = Alignment.End
-                                                                        ) {
-                                                                            Text("END LOCATION", color = Color(0xFF10B981), fontSize = 8.sp, fontWeight = FontWeight.Bold)
-                                                                            Text(
-                                                                                text = "${String.format("%.5f", sg.endLat)}, ${String.format("%.5f", sg.endLng)}",
-                                                                                color = Color.LightGray,
-                                                                                fontSize = 10.sp,
-                                                                                fontFamily = FontFamily.Monospace,
-                                                                                textAlign = TextAlign.End
-                                                                            )
-                                                                            Text(sg.endTime, color = Color.Gray, fontSize = 9.sp, textAlign = TextAlign.End)
-                                                                        }
-                                                                    }
-                                                                    
-                                                                    Spacer(modifier = Modifier.height(8.dp))
-                                                                    HorizontalDivider(color = Color(0xFF334155))
-                                                                    Spacer(modifier = Modifier.height(6.dp))
-                                                                    
-                                                                    Row(
-                                                                        modifier = Modifier.fillMaxWidth(),
-                                                                        horizontalArrangement = Arrangement.SpaceBetween
-                                                                    ) {
-                                                                        Text(
-                                                                            text = "Trip Distance: ${String.format("%.2f", sg.distanceKm)} km",
-                                                                            color = Color.LightGray,
-                                                                            fontSize = 10.sp,
-                                                                            fontWeight = FontWeight.Medium
-                                                                        )
-                                                                        Text(
-                                                                            text = "Avg: ${String.format("%.1f", sg.averageSpeed)} km/h • Max: ${String.format("%.1f", sg.maxSpeed)} km/h",
-                                                                            color = Color.Gray,
-                                                                            fontSize = 10.sp
-                                                                        )
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            } else {
-                                                // TELEMETRY TRAIL LOG TAB
-                                                Text(
-                                                    text = "Telemetry Trail Log Output:",
-                                                    color = Color.LightGray,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    modifier = Modifier.padding(bottom = 6.dp)
-                                                )
-                                                            
-                                            LazyColumn(
-                                                modifier = Modifier.fillMaxSize(),
-                                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                                            ) {
-                                                items(routeHistory.size) { idx ->
-                                                    val pt = routeHistory[idx]
-                                                    val isCurrent = idx == playbackStepIndex
-                                                    val tStr = pt.deviceTime ?: ""
-                                                    val timeLabel = if (tStr.contains("T")) tStr.substringAfter("T").substringBefore("Z") else tStr
-                                                    
-                                                    val rowBgColor = when {
-                                                        isCurrent -> Color(0xFF1E40AF)
-                                                        pt.speedKmh > 80.0 -> Color(0xFF7F1D1D)
-                                                        pt.speedKmh < 5.0 -> Color(0xFF1F2937)
-                                                        else -> Color(0xFF111827)
-                                                    }
-
-                                                    Row(
-                                                        modifier = Modifier
-                                                            .fillMaxWidth()
-                                                            .clip(RoundedCornerShape(4.dp))
-                                                            .background(rowBgColor)
-                                                            .clickable {
-                                                                isPlaybackActive = false
-                                                                playbackStepIndex = idx
-                                                            }
-                                                            .padding(horizontal = 8.dp, vertical = 5.dp),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
-                                                    ) {
-                                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                                            Text(
-                                                                text = "#${idx + 1}",
-                                                                color = if (isCurrent) Color.White else Color.Gray,
-                                                                fontSize = 10.sp,
-                                                                fontWeight = FontWeight.Bold,
-                                                                modifier = Modifier.width(32.dp)
-                                                            )
-                                                            Spacer(modifier = Modifier.width(4.dp))
-                                                            Text(
-                                                                text = timeLabel,
-                                                                color = Color.LightGray,
-                                                                fontSize = 10.sp,
-                                                                fontFamily = FontFamily.Monospace
-                                                            )
-                                                        }
-                                                        
-                                                        Row {
-                                                            Text(
-                                                                text = "${String.format("%.1f", pt.speedKmh)} km/h",
-                                                                color = if (pt.speedKmh > 80.0) Color(0xFFFCA5A5) else Color(0xFF10B981),
-                                                                fontSize = 10.sp,
-                                                                fontWeight = FontWeight.Bold
-                                                            )
-                                                            Spacer(modifier = Modifier.width(12.dp))
-                                                            Text(
-                                                                text = "${String.format("%.4f", pt.latitude)}, ${String.format("%.4f", pt.longitude)}",
-                                                                color = Color.Gray,
-                                                                fontSize = 9.sp,
-                                                                fontFamily = FontFamily.Monospace
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            } else {
-                                // Dynamic instruction status card
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Icon(
-                                            imageVector = Icons.Default.PlayArrow,
-                                            contentDescription = null,
-                                            tint = Color.DarkGray,
-                                            modifier = Modifier.size(48.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        val statusLabel = if (playbackSelectedDeviceId == null) {
-                                            "Select a telemetry hardware unit above to begin."
-                                        } else {
-                                            "Telemetry unit selected. Click \"Fetch Route Coordinates\" to stream historical trails."
-                                        }
-                                        Text(
-                                            text = statusLabel,
-                                            color = Color.LightGray,
-                                            fontSize = 12.sp,
-                                            textAlign = TextAlign.Center,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Text(
-                                            text = "Historical playback logs real coordinates from Traccar telemetry gateway.",
-                                            color = Color.Gray,
-                                            fontSize = 10.sp,
-                                            textAlign = TextAlign.Center,
-                                            modifier = Modifier.padding(top = 4.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        PlaybackTab(
+                            viewModel = viewModel,
+                            devices = devices,
+                            cachedDevices = cachedDevices,
+                            routeHistory = routeHistory,
+                            historyLoading = historyLoading,
+                            selectedDeviceId = selectedDeviceId,
+                            isPlaybackActive = isPlaybackActive,
+                            onSetPlaybackActive = { isPlaybackActive = it },
+                            playbackStepIndex = playbackStepIndex,
+                            onSetPlaybackStepIndex = { playbackStepIndex = it },
+                            playbackSpeedMultiplier = playbackSpeedMultiplier,
+                            onSetPlaybackSpeedMultiplier = { playbackSpeedMultiplier = it },
+                            playbackLoop = playbackLoop,
+                            onSetPlaybackLoop = { playbackLoop = it },
+                            animatedPlaybackLat = animatedPlaybackLat,
+                            animatedPlaybackLng = animatedPlaybackLng,
+                            animatedPlaybackCourse = animatedPlaybackCourse,
+                            isCameraFollowLocked = isCameraFollowLocked,
+                            onSetCameraFollowLocked = { isCameraFollowLocked = it },
+                            playbackRangeMode = playbackRangeMode,
+                            onSetPlaybackRangeMode = { playbackRangeMode = it },
+                            predefinedRange = predefinedRange,
+                            onSetPredefinedRange = { predefinedRange = it },
+                            customStartCalendar = customStartCalendar,
+                            onSetCustomStartCalendar = { customStartCalendar = it },
+                            customEndCalendar = customEndCalendar,
+                            onSetCustomEndCalendar = { customEndCalendar = it },
+                            mapProviderStyle = mapProviderStyle,
+                            markerLabelStyle = markerLabelStyle,
+                            markerIconStyle = markerIconStyle,
+                            customIconUri = customIconUri,
+                            colorMoving = colorMoving,
+                            colorIdle = colorIdle,
+                            colorOffline = colorOffline,
+                            markerTriggerMode = markerTriggerMode,
+                            infoCardFields = infoCardFields,
+                            onNavigateBack = { currentTab = 1 },
+                            onResetMapState = { resetMapState() }
+                        )
                     }
 
                     3 -> {
-                        // TAB 2: REMOTE CONTROL TELEMATICS DISPATCH COMMANDS PANEL
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp)
-                        ) {
-                            Text(
-                                text = viewModel.translate("command"),
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
-                                modifier = Modifier.padding(bottom = 4.dp)
-                            )
-                            Text(
-                                text = "Issue over-the-air instruction signals directly into the telemetry unit transponders.",
-                                color = Color.Gray,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(bottom = 16.dp)
-                            )
-
-                            var selectedCommandDevId by remember { mutableStateOf<Long?>(devices.firstOrNull()?.id) }
-                            var selectedCommandType by remember { mutableStateOf("Engine Fuel Cut") }
-                            var commandPayload by remember { mutableStateOf("RELAY_1=OFF") }
-
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text(viewModel.translate("select_device"), color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                    // Target Select dropdown simulation (row of buttons of first few devices)
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        devices.take(3).forEach { dev ->
-                                            val active = selectedCommandDevId == dev.id
-                                            Box(
-                                                modifier = Modifier
-                                                    .background(if (active) Color(0xFF3B82F6) else Color(0xFF1E293B), CircleShape)
-                                                    .clickable { selectedCommandDevId = dev.id }
-                                                    .padding(horizontal = 12.dp, vertical = 6.dp)
-                                            ) {
-                                                Text(dev.name, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                            }
-                                        }
-                                    }
-
-                                    HorizontalDivider(color = Color(0xFF1E293B))
-
-                                    Text(viewModel.translate("engine_status") + " / " + viewModel.translate("command_payload"), color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                    
-                                    val commandsTemplates = listOf(
-                                        "Engine Fuel Cut" to "RELAY_1=OFF (Ignition Lock)",
-                                        "Engine Resume" to "RELAY_1=ON (De-restrict ignition)",
-                                        "Hardware Reboot" to "SYS_REBOOT_FORCE=1",
-                                        "Poll GPS (Ping)" to "QUERY_POLL_INTERVAL=5s"
-                                    )
-                                    
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        listOf("Engine Fuel Cut", "Engine Resume", "Poll GPS (Ping)").forEach { cmd ->
-                                            val active = selectedCommandType == cmd
-                                            Box(
-                                                modifier = Modifier
-                                                    .background(if (active) Color(0xFF10B981) else Color(0xFF1E293B), CircleShape)
-                                                    .clickable { 
-                                                        selectedCommandType = cmd
-                                                        commandPayload = commandsTemplates.find { it.first == cmd }?.second ?: ""
-                                                    }
-                                                    .padding(horizontal = 12.dp, vertical = 6.dp)
-                                            ) {
-                                                Text(cmd, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                            }
-                                        }
-                                    }
-
-                                    OutlinedTextField(
-                                        value = commandPayload,
-                                        onValueChange = { commandPayload = it },
-                                        label = { Text("Command Raw Payload") },
-                                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
-                                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-                                    )
-
-                                    Button(
-                                        onClick = {
-                                            selectedCommandDevId?.let { devId ->
-                                                viewModel.sendDeviceCommand(devId, selectedCommandType, commandPayload)
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text(viewModel.translate("send_command") + " 🚀", fontWeight = FontWeight.ExtraBold)
-                                    }
-                                }
-                            }
-
-                            // Sent log history
-                            Text(viewModel.translate("commands"), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
-                                items(commandsLog) { log ->
-                                    Card(
-                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                        border = BorderStroke(1.dp, Color(0xFF1E293B)),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(12.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Column {
-                                                Text(log.deviceName, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                                Text("Payload: ${log.payload}", color = Color.Gray, fontSize = 10.sp)
-                                                Text("Time: ${log.timestamp}", color = Color.DarkGray, fontSize = 9.sp)
-                                            }
-                                            Card(
-                                                colors = CardDefaults.cardColors(
-                                                    containerColor = if (log.status == "EXECUTED") Color(0x2210B981) else Color(0x22F59E0B)
-                                                )
-                                            ) {
-                                                Text(
-                                                    text = log.status,
-                                                    fontSize = 9.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = if (log.status == "EXECUTED") Color(0xFF10B981) else Color(0xFFF59E0B),
-                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        CommandsTab(
+                            viewModel = viewModel,
+                            devices = devices
+                        )
                     }
 
-                     4 -> {
-                        // TAB 3: CUSTOM GEOFENCE DESIGNER VIEW
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp)
-                        ) {
-                            Text(
-                                text = viewModel.translate("geofence"),
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
-                                modifier = Modifier.padding(bottom = 4.dp)
-                            )
-                            Text(
-                                text = "Design custom polygonal boundaries or circular quarantine hubs directly onto the active map canvas, and sync them with the Traccar backend.",
-                                color = Color.Gray,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(bottom = 16.dp)
-                            )
-
-                            // Local states for custom GIS drawing board
-                            var drawMode by remember { mutableStateOf("none") } // "none", "polygon", "circle"
-                            val drawnPoints = remember { mutableStateListOf<Pair<Double, Double>>() }
-                            var drawnCircleCenter by remember { mutableStateOf<Pair<Double, Double>?>(null) }
-                            var drawnCircleRadiusMeters by remember { mutableStateOf(1500.0) }
-                            
-                            var gfName by remember { mutableStateOf("") }
-                            var selectedDeviceIdForGeofence by remember { mutableStateOf<Long?>(null) }
-                            var isDeviceDropdownExpanded by remember { mutableStateOf(false) }
-
-                            // Map Drawing Sandbox Board (Mapbox Draw visual simulator controls)
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(320.dp)
-                                    .padding(bottom = 16.dp),
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF070B19)),
-                                border = BorderStroke(1.dp, Color(0xFF1E293B))
-                            ) {
-                                Box(modifier = Modifier.fillMaxSize()) {
-                                    // Embedded interactive map
-                                    SlippyMap(
-                                        modifier = Modifier.fillMaxSize(),
-                                        initialCenterLat = 9.0192,
-                                        initialCenterLng = 38.7525,
-                                        initialZoom = 14.5f,
-                                        markers = emptyList(),
-                                        geofences = geofences,
-                                        drawMode = drawMode,
-                                        drawnPoints = drawnPoints,
-                                        onDrawPointsChanged = { newPoints ->
-                                            drawnPoints.clear()
-                                            drawnPoints.addAll(newPoints)
-                                        },
-                                        drawnCircleCenter = drawnCircleCenter,
-                                        drawnCircleRadiusMeters = drawnCircleRadiusMeters,
-                                        onDrawCircleChanged = { center, radius ->
-                                            drawnCircleCenter = center
-                                            drawnCircleRadiusMeters = radius
-                                        },
-                                        mapStyle = mapProviderStyle,
-                                        isDarkMode = true
-                                    )
-
-                                    MapStyleControlLayer(
-                                        mapProviderStyle = mapProviderStyle,
-                                        onStyleSelected = { viewModel.setMapProviderStyle(it) },
-                                        modifier = Modifier
-                                            .align(Alignment.TopEnd)
-                                            .padding(8.dp)
-                                    )
-
-                                    // Floating Info banner
-                                    Card(
-                                        modifier = Modifier
-                                            .align(Alignment.TopStart)
-                                            .padding(12.dp),
-                                        colors = CardDefaults.cardColors(containerColor = Color(0xCC0F172A)),
-                                        border = BorderStroke(1.dp, Color(0x553B82F6))
-                                    ) {
-                                        Text(
-                                            text = when (drawMode) {
-                                                "polygon" -> "🔨 Mapbox Draw: Tap map to plot vertices (${drawnPoints.size})"
-                                                "circle" -> "🔨 Mapbox Draw: Click to place center, click edge to size"
-                                                else -> "📐 Choose a Sketch Tool from standard toolbar ➔"
-                                            },
-                                            color = Color.White,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                                        )
-                                    }
-
-                                    // Floating Mapbox Draw toolbar panel
-                                    Card(
-                                        modifier = Modifier
-                                            .align(Alignment.CenterEnd)
-                                            .padding(12.dp)
-                                            .width(44.dp),
-                                        colors = CardDefaults.cardColors(containerColor = Color(0xDD0F172A)),
-                                        border = BorderStroke(1.dp, Color(0xFF1E293B))
-                                    ) {
-                                        Column(
-                                            modifier = Modifier.padding(vertical = 6.dp),
-                                            horizontalAlignment = Alignment.CenterHorizontally,
-                                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            // Polygon button
-                                            IconButton(
-                                                onClick = {
-                                                    drawMode = if (drawMode == "polygon") "none" else "polygon"
-                                                    drawnCircleCenter = null
-                                                },
-                                                modifier = Modifier.size(36.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Place,
-                                                    contentDescription = "Draw Polygon",
-                                                    tint = if (drawMode == "polygon") Color(0xFF10B981) else Color.White
-                                                )
-                                            }
-
-                                            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF1E293B)))
-
-                                            // Circle button
-                                            IconButton(
-                                                onClick = {
-                                                    drawMode = if (drawMode == "circle") "none" else "circle"
-                                                    drawnPoints.clear()
-                                                },
-                                                modifier = Modifier.size(36.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.LocationOn,
-                                                    contentDescription = "Draw Circle",
-                                                    tint = if (drawMode == "circle") Color(0xFF3B82F6) else Color.White
-                                                )
-                                            }
-
-                                            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF1E293B)))
-
-                                            // Clear button
-                                            IconButton(
-                                                onClick = {
-                                                    drawnPoints.clear()
-                                                    drawnCircleCenter = null
-                                                    drawMode = "none"
-                                                },
-                                                modifier = Modifier.size(36.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Close,
-                                                    contentDescription = "Reset",
-                                                    tint = Color(0xFFEF4444)
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Geofence attributes & Device links
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text("Establish Hardware Boundaries", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-
-                                    OutlinedTextField(
-                                        value = gfName,
-                                        onValueChange = { gfName = it },
-                                        label = { Text("Geofence Name") },
-                                        placeholder = { Text("e.g., Safe Zone Delta") },
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedTextColor = Color.White,
-                                            unfocusedTextColor = Color.White,
-                                            focusedBorderColor = Color(0xFF3B82F6),
-                                            unfocusedBorderColor = Color(0xFF1E293B)
-                                        ),
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-
-                                    // Dynamic Device linkage Dropdown (assigned hardware devices only)
-                                    val currentAssignedDevice = devices.find { d -> d.id == selectedDeviceIdForGeofence }
-                                    val buttonLabelText = if (currentAssignedDevice != null) {
-                                        "Link Device: ${currentAssignedDevice.name} (${currentAssignedDevice.uniqueId})"
-                                    } else {
-                                        "Select Device to Bind Rule"
-                                    }
-
-                                    Box(modifier = Modifier.fillMaxWidth()) {
-                                        Button(
-                                            onClick = { isDeviceDropdownExpanded = true },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                                            modifier = Modifier.fillMaxWidth(),
-                                            shape = RoundedCornerShape(8.dp)
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text(
-                                                    text = buttonLabelText,
-                                                    color = Color.White,
-                                                    fontSize = 13.sp
-                                                )
-                                                Icon(
-                                                    imageVector = Icons.Default.PlayArrow,
-                                                    contentDescription = "Open List",
-                                                    tint = Color.Gray,
-                                                    modifier = Modifier.size(14.dp)
-                                                )
-                                            }
-                                        }
-
-                                        DropdownMenu(
-                                            expanded = isDeviceDropdownExpanded,
-                                            onDismissRequest = { isDeviceDropdownExpanded = false },
-                                            modifier = Modifier.fillMaxWidth(0.9f).background(Color(0xFF0F172A))
-                                        ) {
-                                            devices.forEach { dev ->
-                                                DropdownMenuItem(
-                                                    text = {
-                                                        Text("${dev.name} [Unique ID: ${dev.uniqueId}]", color = Color.White, fontSize = 13.sp)
-                                                    },
-                                                    onClick = {
-                                                        selectedDeviceIdForGeofence = dev.id
-                                                        isDeviceDropdownExpanded = false
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    // Interactive readings readout
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Card(
-                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF070B19)),
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Column(modifier = Modifier.padding(10.dp)) {
-                                                Text("Boundary Structure", color = Color.Gray, fontSize = 9.sp)
-                                                Text(
-                                                    text = if (drawMode == "polygon") "GIS Polygon Shape" else if (drawMode == "circle") "Circular Geo-Ring" else "Not Plotted Yet",
-                                                    color = Color.White,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                        }
-
-                                        Card(
-                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF070B19)),
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Column(modifier = Modifier.padding(10.dp)) {
-                                                Text("Geographical Scale", color = Color.Gray, fontSize = 9.sp)
-                                                Text(
-                                                    text = if (drawMode == "polygon") {
-                                                        "${drawnPoints.size} nodes mapped"
-                                                    } else if (drawMode == "circle" && drawnCircleCenter != null) {
-                                                        "${drawnCircleRadiusMeters.roundToInt()}m radius"
-                                                    } else {
-                                                        "Awaiting drawings"
-                                                    },
-                                                    color = Color(0xFF3B82F6),
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    Button(
-                                        onClick = {
-                                            if (gfName.isNotBlank()) {
-                                                if (drawMode == "polygon" && drawnPoints.size >= 3) {
-                                                    val centerLat = drawnPoints.map { it.first }.average()
-                                                    val centerLng = drawnPoints.map { it.second }.average()
-                                                    viewModel.addGeofence(
-                                                        name = gfName,
-                                                        lat = centerLat,
-                                                        lng = centerLng,
-                                                        radius = 0.0,
-                                                        type = "polygon",
-                                                        points = drawnPoints.toList(),
-                                                        deviceId = selectedDeviceIdForGeofence
-                                                    )
-                                                    gfName = ""
-                                                    drawnPoints.clear()
-                                                    drawMode = "none"
-                                                } else if (drawMode == "circle" && drawnCircleCenter != null) {
-                                                    viewModel.addGeofence(
-                                                        name = gfName,
-                                                        lat = drawnCircleCenter!!.first,
-                                                        lng = drawnCircleCenter!!.second,
-                                                        radius = drawnCircleRadiusMeters,
-                                                        type = "circle",
-                                                        points = emptyList(),
-                                                        deviceId = selectedDeviceIdForGeofence
-                                                    )
-                                                    gfName = ""
-                                                    drawnCircleCenter = null
-                                                    drawMode = "none"
-                                                }
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
-                                        enabled = gfName.isNotBlank() && ((drawMode == "polygon" && drawnPoints.size >= 3) || (drawMode == "circle" && drawnCircleCenter != null)),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text("DEPLOY & BROADCAST GEOFENCE 🌐", fontWeight = FontWeight.Bold, color = Color.White)
-                                    }
-                                }
-                            }
-
-                            // Geofences List
-                            Text("Active Sync'd Fleet Geovallas", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                            if (geofences.isEmpty()) {
-                                Text("No active geofences configured on the Traccar channel.", color = Color.Gray, fontSize = 11.sp)
-                            } else {
-                                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
-                                    items(geofences) { gf ->
-                                        Card(
-                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                            border = BorderStroke(1.dp, Color(0xFF1E293B)),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(12.dp),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                                    Card(
-                                                        colors = CardDefaults.cardColors(containerColor = if (gf.type == "polygon") Color(0x3310B981) else Color(0x333B82F6)),
-                                                        shape = CircleShape,
-                                                        modifier = Modifier.size(36.dp)
-                                                    ) {
-                                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                                            Text(
-                                                                text = if (gf.type == "polygon") "⬡" else "◯",
-                                                                color = if (gf.type == "polygon") Color(0xFF10B981) else Color(0xFF3B82F6),
-                                                                fontSize = 16.sp,
-                                                                fontWeight = FontWeight.Bold
-                                                            )
-                                                        }
-                                                    }
-
-                                                    Column {
-                                                        Text(gf.name, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                                        if (gf.type == "polygon") {
-                                                            Text("Boundary Type: GIS Polygon Bounds", color = Color(0xFF10B981), fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                                            Text("${gf.points.size} node vertices plotted", color = Color.Gray, fontSize = 9.sp)
-                                                        } else {
-                                                            Text("Boundary Type: Circular Ring (${gf.radiusMeters.roundToInt()}m)", color = Color(0xFF3B82F6), fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                                            Text("Center Lat: ${String.format("%.4f", gf.latitude)}, Lng: ${String.format("%.4f", gf.longitude)}", color = Color.Gray, fontSize = 9.sp)
-                                                        }
-                                                    }
-                                                }
-                                                IconButton(onClick = { viewModel.deleteGeofence(gf.id) }) {
-                                                    Icon(Icons.Default.Delete, contentDescription = "Remove Geofence Plan", tint = Color(0xFFEF4444))
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    4 -> {
+                        GeofencesTab(
+                            viewModel = viewModel,
+                            devices = devices,
+                            mapProviderStyle = mapProviderStyle
+                        )
                     }
 
                     5 -> {
-                        // TAB 4: OPERATOR SETTINGS AND CUSTOMIZATION DIALS PANEL
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState())
-                                .padding(16.dp)
-                        ) {
-                            Text(
-                                text = viewModel.translate("customization_panel"),
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
-                                modifier = Modifier.padding(bottom = 4.dp)
-                            )
-                            Text(
-                                text = "Fine-tune language translations, map layer styles, and active labeling text badges.",
-                                color = Color.Gray,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(bottom = 16.dp)
-                            )
-
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                border = BorderStroke(1.dp, Color(0xFF1E293B)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                                    // Language Select Options
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text(viewModel.translate("language"), color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            listOf(
-                                                "en" to "English 🇺🇸",
-                                                "am" to "አማርኛ 🇪🇹",
-                                                "om" to "Oromoo 🇪🇹"
-                                            ).forEach { (code, label) ->
-                                                val active = appLanguage == code
-                                                Box(
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .background(if (active) Color(0xFF3B82F6) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                                                        .clickable { viewModel.setAppLanguage(code) }
-                                                        .padding(vertical = 10.dp),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    HorizontalDivider(color = Color(0xFF1E293B))
-
-                                    // Map Provider Selection Style Options
-                                    var selectedProvider by remember(mapProviderStyle) {
-                                        mutableStateOf(if (mapProviderStyle.startsWith("mapbox")) "Mapbox" else "Google")
-                                    }
-
-                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Text(viewModel.translate("map_style") + " - Provider", color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            listOf("Mapbox" to "Mapbox 🛰️", "Google" to "Google Maps 🗺️").forEach { (provider, label) ->
-                                                val active = selectedProvider == provider
-                                                Box(
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .background(
-                                                            if (active) Color(0xFF3B82F6).copy(alpha = 0.2f) else Color(0xFF1E293B),
-                                                            RoundedCornerShape(8.dp)
-                                                        )
-                                                        .border(
-                                                            1.5.dp,
-                                                            if (active) Color(0xFF3B82F6) else Color.Transparent,
-                                                            RoundedCornerShape(8.dp)
-                                                        )
-                                                        .clickable { selectedProvider = provider }
-                                                        .padding(vertical = 10.dp),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                                }
-                                            }
-                                        }
-
-                                        // Scrollable Map Styles list based on provider selection
-                                        val availableStyles = if (selectedProvider == "Mapbox") {
-                                            listOf(
-                                                "mapbox_streets" to "Mapbox Streets 🛣️",
-                                                "mapbox_outdoors" to "Outdoors 🏔️",
-                                                "mapbox_light" to "Mapbox Light ☀️",
-                                                "mapbox_dark" to "Mapbox Dark 🌑",
-                                                "mapbox_satellite" to "Mapbox Sat 🛰️",
-                                                "mapbox_satellite_streets" to "Sat Streets 🏷️"
-                                            )
-                                        } else {
-                                            listOf(
-                                                "google_road" to "Google Rd 🗺️",
-                                                "google_satellite" to "Google Sat 📷",
-                                                "google_hybrid" to "Google Hyb 🛰️",
-                                                "google_terrain" to "Google Ter ⛰️"
-                                            )
-                                        }
-
-                                        Text("Select " + selectedProvider + " Style Variant", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .horizontalScroll(rememberScrollState()),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            availableStyles.forEach { (style, labelKey) ->
-                                                val active = mapProviderStyle == style
-                                                Box(
-                                                    modifier = Modifier
-                                                        .background(if (active) Color(0xFF10B981) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                                                        .border(
-                                                            1.dp,
-                                                            if (active) Color(0xFF10B981) else Color(0xFF2D3748),
-                                                            RoundedCornerShape(8.dp)
-                                                        )
-                                                        .clickable { viewModel.setMapProviderStyle(style) }
-                                                        .padding(horizontal = 14.dp, vertical = 10.dp)
-                                                ) {
-                                                    Text(labelKey, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    HorizontalDivider(color = Color(0xFF1E293B))
-
-                                    // Marker labeling preferences options
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text(viewModel.translate("marker_label"), color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .horizontalScroll(rememberScrollState()),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            listOf(
-                                                "name" to viewModel.translate("device_name"),
-                                                "coordinates" to viewModel.translate("coordinates"),
-                                                "plate" to viewModel.translate("plate_number")
-                                            ).forEach { (labelType, textLabel) ->
-                                                val active = markerLabelStyle == labelType
-                                                Box(
-                                                    modifier = Modifier
-                                                        .background(if (active) Color(0xFF10B981) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                                                        .clickable { viewModel.setMarkerLabelStyle(labelType) }
-                                                        .padding(horizontal = 14.dp, vertical = 10.dp)
-                                                ) {
-                                                    Text(textLabel, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    HorizontalDivider(color = Color(0xFF1E293B))
-
-                                    // Marker custom aesthetic selection options
-                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Text(viewModel.translate("marker_icon") + " / Profile Vehicle Avatar Setting", color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            listOf(
-                                                "pin" to "Pin 📍",
-                                                "car" to "Car 🚗",
-                                                "truck" to "Truck 🚛",
-                                                "bike" to "Bike 🏍️",
-                                                "custom" to "Custom 🖼️"
-                                            ).forEach { (iconKey, label) ->
-                                                val active = markerIconStyle == iconKey
-                                                Box(
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .background(if (active) Color(0xFF8B5CF6) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                                                        .clickable { viewModel.setMarkerIconStyle(iconKey) }
-                                                        .padding(vertical = 10.dp),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Text(label, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                                }
-                                            }
-                                        }
-
-                                        // Image Upload / Preview portion for Custom URI Icon option
-                                        if (markerIconStyle == "custom" || !customIconUri.isNullOrEmpty()) {
-                                            Card(
-                                                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-                                                border = BorderStroke(1.dp, Color(0xFF2D3748)),
-                                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier.padding(12.dp),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                        Text("Local Photo Library Icon", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                                        Text(
-                                                            text = if (!customIconUri.isNullOrEmpty()) "Custom avatar is active on live tracking." else "No local file assigned yet.",
-                                                            color = Color.LightGray,
-                                                            fontSize = 10.sp
-                                                        )
-                                                        Button(
-                                                            onClick = { imageLauncher.launch("image/*") },
-                                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
-                                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                                            shape = RoundedCornerShape(6.dp),
-                                                            modifier = Modifier.padding(top = 4.dp)
-                                                        ) {
-                                                            Text("Upload JPEG/PNG Icon", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                                        }
-                                                    }
-
-                                                    // Image thumbnail slot
-                                                    if (!customIconUri.isNullOrEmpty()) {
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .size(48.dp)
-                                                                .background(Color.White, CircleShape)
-                                                                .padding(4.dp),
-                                                            contentAlignment = Alignment.Center
-                                                        ) {
-                                                            AsyncImage(
-                                                                model = customIconUri,
-                                                                contentDescription = "User Uploaded Vehicle Icon",
-                                                                modifier = Modifier.size(36.dp)
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            // Custom Fleet Tools & Controls Navigation Menu
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                border = BorderStroke(1.dp, Color(0xFF1E293B)),
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text(
-                                        text = "FLEET TOOLS & CONTROL",
-                                        color = Color(0xFF60A5FA),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        letterSpacing = 1.sp
-                                    )
-                                    
-                                    // Option 1: Send Command
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                                            .clickable { currentTab = 3 }
-                                            .padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(Icons.Default.Send, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(if (appLanguage == "am") "ቁጥጥር ትዕዛዝ (Commands)" else if (appLanguage == "om") "Ergaa Ergi" else "Send Commands", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                            Text("Dispatch GPRS configurations and remote execution payloads", color = Color.Gray, fontSize = 9.sp)
-                                        }
-                                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(12.dp))
-                                    }
-
-                                    // Option 2: Geofence Planner
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                                            .clickable { currentTab = 4 }
-                                            .padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(Icons.Default.Place, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(if (appLanguage == "am") "የጂኦፌንስ ፕላነር" else if (appLanguage == "om") "Daangaa Geofence" else "Geofence Planner", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                            Text("Establish geographical rules and boundaries", color = Color.Gray, fontSize = 9.sp)
-                                        }
-                                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(12.dp))
-                                    }
-
-                                    // Option 3: Analytics & Reports
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                                            .clickable { currentTab = 6 }
-                                            .padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(Icons.Default.DateRange, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(if (appLanguage == "am") "የመንገድ ታሪክ ሪፖርቶች" else if (appLanguage == "om") "Gabaasa Seenaa" else "Historical Route Reports", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                            Text("Generate mileage, velocity, and trip detail summaries", color = Color.Gray, fontSize = 9.sp)
-                                        }
-                                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(12.dp))
-                                    }
-
-                                    // Option 4: Alerts and Notifications
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                                            .clickable { currentTab = 7 }
-                                            .padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(Icons.Default.Notifications, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(if (appLanguage == "am") "የቀጥታ ማንቂያዎችና ማሳወቂያዎች" else if (appLanguage == "om") "Akeekkachiisa Haaraya" else "Alerts & Live Notifications", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                            Text("Review active geographical fence violations and security logs", color = Color.Gray, fontSize = 9.sp)
-                                        }
-                                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(12.dp))
-                                    }
-                                }
-                            }
-
-                            // SaaS Tenant details footer card
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Text(viewModel.translate("tenant_mode"), color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
-                                    Text(viewModel.translate("assigned_vehicles"), color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-                                }
-                            }
-                        }
+                        SettingsTab(
+                            viewModel = viewModel,
+                            appLanguage = appLanguage,
+                            mapProviderStyle = mapProviderStyle,
+                            markerLabelStyle = markerLabelStyle,
+                            markerIconStyle = markerIconStyle,
+                            customIconUri = customIconUri,
+                            colorMoving = colorMoving,
+                            colorIdle = colorIdle,
+                            colorOffline = colorOffline,
+                            markerTriggerMode = markerTriggerMode,
+                            infoCardFields = infoCardFields,
+                            positionUpdateInterval = positionUpdateInterval,
+                            isSyncing = isSyncing,
+                            onLogout = onLogout,
+                            onNavigateTab = { currentTab = it },
+                            imageLauncher = imageLauncher
+                        )
                     }
                     6 -> {
-                        // TAB 6: HISTORICAL TRIP REPORTS & ANALYTICS
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp)
-                                .verticalScroll(rememberScrollState())
-                        ) {
-                            Text(
-                                text = "HISTORICAL ROUTE REPORTS",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
-                                modifier = Modifier.padding(bottom = 4.dp)
-                            )
-                            Text(
-                                text = "Select an active fleet asset and historical time frame to compile a telematics route report.",
-                                color = Color.Gray,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(bottom = 16.dp)
-                            )
-
-                            var selectedAssetForReport by remember { mutableStateOf<Long?>(null) }
-                            var queryHours by remember { mutableStateOf(24) }
-                            var reportResults by remember { mutableStateOf<List<Position>>(emptyList()) }
-                            var reportLoading by remember { mutableStateOf(false) }
-
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                border = BorderStroke(1.dp, Color(0xFF1E293B)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                                    // Asset Selector
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text("Select Fleet Asset", color = Color.LightGray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            devices.forEach { dev ->
-                                                val active = selectedAssetForReport == dev.id
-                                                Box(
-                                                    modifier = Modifier
-                                                        .background(if (active) Color(0xFF3B82F6) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                                                        .clickable { selectedAssetForReport = dev.id }
-                                                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                                                ) {
-                                                    Text(dev.name, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Time Frame selector
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text("Query Time Window", color = Color.LightGray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            listOf(3 to "Past 3 hrs", 12 to "Past 12 hrs", 24 to "Past 24 hrs", 72 to "Past 72 hrs").forEach { (h, lab) ->
-                                                val active = queryHours == h
-                                                Box(
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .background(if (active) Color(0xFF10B981) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                                                        .clickable { queryHours = h }
-                                                        .padding(vertical = 10.dp),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Text(lab, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    Button(
-                                        onClick = {
-                                            val devId = selectedAssetForReport
-                                            if (devId != null) {
-                                                reportLoading = true
-                                                scope.launch {
-                                                    try {
-                                                        val toTime = Date()
-                                                        val fromTime = Date(toTime.time - queryHours * 60 * 60 * 1000L)
-                                                        val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-                                                        val fromStr = sdf.format(fromTime)
-                                                        val toStr = sdf.format(toTime)
-
-                                                        val history = viewModel.repository.getRouteHistory(devId, fromStr, toStr)
-                                                        reportResults = history
-                                                        viewModel.triggerFeedback("Fetched ${history.size} historic coordinates for reporting")
-                                                    } catch (e: Exception) {
-                                                        viewModel.triggerFeedback("Query failed: " + e.message)
-                                                    } finally {
-                                                        reportLoading = false
-                                                    }
-                                                }
-                                            }
-                                        },
-                                        enabled = selectedAssetForReport != null && !reportLoading,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
-                                    ) {
-                                        if (reportLoading) {
-                                            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp))
-                                        } else {
-                                            Text("EXECUTE TELEMETRY QUERY OR REPORT 📊", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 11.sp)
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (selectedAssetForReport != null && reportResults.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text(
-                                    text = "REPORT COMPILED: " + devices.find { it.id == selectedAssetForReport }?.name,
-                                    color = Color(0xFF60A5FA),
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    modifier = Modifier.padding(bottom = 8.dp)
-                                )
-
-                                Card(
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                    border = BorderStroke(1.dp, Color(0xFF1E293B)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        val avgSpeed = reportResults.map { it.speed ?: 0.0 }.average()
-                                        val maxSpeed = reportResults.maxOfOrNull { it.speed ?: 0.0 } ?: 0.0
-                                        val entries = reportResults.size
-
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Text("Total Breadcrumbs:", color = Color.Gray, fontSize = 12.sp)
-                                            Text("$entries positions", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                        }
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Text("Average Velocity:", color = Color.Gray, fontSize = 12.sp)
-                                            Text(String.format(Locale.US, "%.1f km/h", avgSpeed), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                        }
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Text("Maximum Speed Detected:", color = Color.Gray, fontSize = 12.sp)
-                                            Text(String.format(Locale.US, "%.1f km/h", maxSpeed), color = if (maxSpeed > 80) Color.Red else Color.Green, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                        }
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(12.dp))
-
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    reportResults.take(15).forEach { pos ->
-                                        Card(
-                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF070B19)),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(12.dp),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Column {
-                                                    Text("Time: ${pos.deviceTime}", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                    Text("Coordinates: ${pos.latitude}, ${pos.longitude}", color = Color.Gray, fontSize = 10.sp)
-                                                    pos.address?.let {
-                                                        Text(it, color = Color.LightGray, fontSize = 9.sp)
-                                                    }
-                                                }
-                                                Text(
-                                                    text = String.format(Locale.US, "%.1f km/h", pos.speed ?: 0.0),
-                                                    color = Color(0xFF10B981),
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 12.sp
-                                                )
-                                            }
-                                        }
-                                    }
-                                    if (reportResults.size > 15) {
-                                        Text(
-                                            text = "... and ${reportResults.size - 15} more positions in full report history",
-                                            color = Color.Gray,
-                                            fontSize = 11.sp,
-                                            textAlign = TextAlign.Center,
-                                            modifier = Modifier.fillMaxWidth().padding(8.dp)
-                                        )
-                                    }
-                                }
-                            } else if (selectedAssetForReport != null) {
-                                Text(
-                                    text = "No route entries recorded during selected timeframe.",
-                                    color = Color.LightGray,
-                                    fontSize = 11.sp,
-                                    modifier = Modifier.padding(16.dp),
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
+                        ReportsTab(
+                            viewModel = viewModel,
+                            devices = devices,
+                            appLanguage = appLanguage
+                        )
                     }
                     7 -> {
-                        // TAB 7: LIVE SECURITY ALERTS & NOTIFICATIONS LOG PANEL
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp)
-                        ) {
-                            val headerText = if (appLanguage == "am") "የቀጥታ ደህንነት ማንቂያዎች መዝገብ" else if (appLanguage == "om") "Gabaasa Akeekkachiisa Nageenyaa" else "LIVE SECURITY ALERTS LOG"
-                            val descText = if (appLanguage == "am") "ዝርዝር የመከታተያ መተላለፍ ማህደሮች፣ ንቁ የክልል ጥሰቶች እና የፍጥነት ማንቂያዎች ታሪክ።" else if (appLanguage == "om") "Galmeewwan daangaa cabsuu konkolaataa, daangaa hojii fi akeekkachiisa saffisaa." else "In-depth telemetry tracker breach archives, active boundaries violations, and speed transponder alerts."
-                            val searchPlaceholder = if (appLanguage == "am") "በመሳሪያ ስም ወይም ክልል ይፈልጉ..." else if (appLanguage == "om") "Maqaa konkolaata ykn daangaan barbaadi..." else "Filter by device label or zone..."
-                            val clearText = if (appLanguage == "am") "ማህደር አጽዳ" else if (appLanguage == "om") "Galmee Haqii" else "Clear Archive"
-                            val emptyText = if (appLanguage == "am") "ምንም የደህንነት ማንቂያ ክስተት አልተገኘም።" else if (appLanguage == "om") "Akeekkachiisni argame hin jiru." else "No security alert events found."
-
-                            Text(
-                                text = headerText,
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
-                                modifier = Modifier.padding(bottom = 4.dp)
-                            )
-                            Text(
-                                text = descText,
-                                color = Color.Gray,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(bottom = 16.dp)
-                            )
-
-                            // Local filter search query
-                            var alertSearchQuery by remember { mutableStateOf("") }
-                            var activeSeverityFilter by remember { mutableStateOf("ALL") } // "ALL", "ENTERED", "EXITED"
-
-                            // Search textfield
-                            OutlinedTextField(
-                                value = alertSearchQuery,
-                                onValueChange = { alertSearchQuery = it },
-                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray) },
-                                placeholder = { Text(searchPlaceholder, color = Color.Gray, fontSize = 12.sp) },
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White,
-                                    focusedContainerColor = Color(0xFF0F172A),
-                                    unfocusedContainerColor = Color(0xFF0F172A),
-                                    focusedBorderColor = Color(0xFF3B82F6),
-                                    unfocusedBorderColor = Color(0xFF1E293B)
-                                ),
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
-                            )
-
-                            // Severity filters Row
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                listOf(
-                                    "ALL" to if (appLanguage == "am") "ሁሉም" else if (appLanguage == "om") "Hunda" else "All Events",
-                                    "ENTERED" to if (appLanguage == "am") "መግቢያ ብቻ" else if (appLanguage == "om") "Galfata Qofa" else "Entered Area",
-                                    "EXITED" to if (appLanguage == "am") "መውጫ ብቻ" else if (appLanguage == "om") "Bahinsa Qofa" else "Exited Area"
-                                ).forEach { (id, filterLabel) ->
-                                    val active = activeSeverityFilter == id
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .background(
-                                                if (active) Color(0xFF3B82F6) else Color(0xFF0F172A),
-                                                RoundedCornerShape(8.dp)
-                                            )
-                                            .border(1.dp, if (active) Color(0xFF3B82F6) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                                            .clickable { activeSeverityFilter = id }
-                                            .padding(vertical = 8.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(filterLabel, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-
-                            val consolidatedAlerts = remember(geofenceAlertHistory, cachedAlerts) {
-                                val localOnes = geofenceAlertHistory.map { alert ->
-                                    val isEnt = alert.type == "ENTERED"
-                                    val msg = if (isEnt) {
-                                        if (appLanguage == "am") "ደህንነቱ የተጠበቀውን ክልል [${alert.geofenceName}] ገብቷል።" 
-                                        else if (appLanguage == "om") "Daangaa kabajamaa [${alert.geofenceName}] seeneera."
-                                        else "Entered protected geofence zone [${alert.geofenceName}]."
-                                    } else {
-                                        if (appLanguage == "am") "ደህንነቱ ከተጠበቀው ክልል [${alert.geofenceName}] ወጥቷል።" 
-                                        else if (appLanguage == "om") "Daangaa kabajamaa [${alert.geofenceName}] baheera."
-                                        else "Exited protected geofence zone [${alert.geofenceName}]."
-                                    }
-                                    ConsolidatedAlert(
-                                        deviceName = alert.deviceName,
-                                        alertType = alert.type,
-                                        isEntered = isEnt,
-                                        message = msg,
-                                        timestamp = alert.timestamp
-                                    )
-                                }
-                                val apiOnes = cachedAlerts.map { dbAlert ->
-                                    val actType = dbAlert.alarmType ?: dbAlert.type
-                                    val isEnt = !actType.lowercase().contains("exit") && !actType.lowercase().contains("cut")
-                                    ConsolidatedAlert(
-                                        deviceName = dbAlert.deviceName,
-                                        alertType = actType.uppercase(),
-                                        isEntered = isEnt,
-                                        message = dbAlert.message,
-                                        timestamp = dbAlert.timestamp
-                                    )
-                                }
-                                (localOnes + apiOnes).sortedByDescending { it.timestamp }
-                            }
-
-                            val filteredAlerts = consolidatedAlerts.filter { alert ->
-                                (alertSearchQuery.isEmpty() || 
-                                 alert.deviceName.contains(alertSearchQuery, ignoreCase = true) || 
-                                 alert.message.contains(alertSearchQuery, ignoreCase = true)) &&
-                                (activeSeverityFilter == "ALL" || 
-                                 (activeSeverityFilter == "ENTERED" && alert.isEntered) || 
-                                 (activeSeverityFilter == "EXITED" && !alert.isEntered))
-                            }
-
-                            if (filteredAlerts.isEmpty()) {
-                                Card(
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                    border = BorderStroke(1.dp, Color(0xFF1E293B)),
-                                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(24.dp).fillMaxWidth(),
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.Center
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Notifications,
-                                            contentDescription = null,
-                                            tint = Color.Gray,
-                                            modifier = Modifier.size(36.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        Text(emptyText, color = Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                    }
-                                }
-                            } else {
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .verticalScroll(rememberScrollState()),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    filteredAlerts.forEach { alert ->
-                                        val isEnteredType = alert.isEntered
-                                        val tagColor = if (isEnteredType) Color(0xFF10B981) else Color(0xFFEF4444)
-                                        val bgGrad = if (isEnteredType) Color(0x1210B981) else Color(0x12EF4444)
-
-                                        Card(
-                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                                            border = BorderStroke(1.dp, Color(0xFF1E293B)),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .background(bgGrad)
-                                                    .padding(14.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                // Dynamic visual severity bar
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(8.dp)
-                                                        .background(tagColor, CircleShape)
-                                                )
-                                                Spacer(modifier = Modifier.width(14.dp))
-
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
-                                                    ) {
-                                                        Text(
-                                                            text = alert.deviceName,
-                                                            color = Color.White,
-                                                            fontWeight = FontWeight.ExtraBold,
-                                                            fontSize = 13.sp
-                                                        )
-                                                        val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(java.util.Date(alert.timestamp))
-                                                        Text(
-                                                            text = timeStr,
-                                                            color = Color.Gray,
-                                                            fontSize = 10.sp
-                                                        )
-                                                    }
-                                                    Spacer(modifier = Modifier.height(4.dp))
-                                                    Text(
-                                                        text = alert.message,
-                                                        color = Color.LightGray,
-                                                        fontSize = 11.sp
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Button(
-                                    onClick = { geofenceAlertHistory = emptyList() },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Delete,
-                                        contentDescription = "clear log",
-                                        tint = Color.LightGray,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(clearText, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
+                        AlertsTab(
+                            viewModel = viewModel,
+                            geofenceAlertHistory = geofenceAlertHistory,
+                            onClearAlertHistory = { geofenceAlertHistory = emptyList() },
+                            appLanguage = appLanguage
+                        )
                     }
                 }
             }
@@ -3660,7 +1002,8 @@ fun DashboardScreen(
                         label = { Text("Friendly Label / Name") },
                         placeholder = { Text("e.g. Sales Rep Scooter B") },
                         singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
+                        modifier = Modifier.fillMaxWidth()
                     )
 
                     OutlinedTextField(
@@ -3669,7 +1012,8 @@ fun DashboardScreen(
                         label = { Text("Unique IMEI Hardware code") },
                         placeholder = { Text("e.g. 8652390145...") },
                         singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
+                        modifier = Modifier.fillMaxWidth()
                     )
 
                     OutlinedTextField(
@@ -3678,7 +1022,18 @@ fun DashboardScreen(
                         label = { Text("Category Classification") },
                         placeholder = { Text("e.g. Car, Truck, Motorcycle") },
                         singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = newDevicePlate,
+                        onValueChange = { newDevicePlate = it },
+                        label = { Text("Plate Number / Vehicle Model") },
+                        placeholder = { Text("e.g. ABC-1234 or Toyota Hilux") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             },
@@ -3686,10 +1041,11 @@ fun DashboardScreen(
                 Button(
                     onClick = {
                         if (newDeviceName.isNotBlank() && newDeviceImei.isNotBlank()) {
-                            viewModel.addNewDevice(newDeviceName, newDeviceImei, newDeviceCategory)
+                            viewModel.addNewDevice(newDeviceName, newDeviceImei, newDeviceCategory, newDevicePlate)
                             showAddDeviceSheet = false
                             newDeviceName = ""
                             newDeviceImei = ""
+                            newDevicePlate = ""
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
@@ -3704,6 +1060,473 @@ fun DashboardScreen(
             },
             containerColor = Color(0xFF1E293B)
         )
+    }
+
+    // Modular Bottom Sheet for displaying Driver Details, Vehicle Info, and Recent Status Updates
+    if (showDeviceDetailSheet && selectedDeviceId != null) {
+        val detailDev = devices.find { it.id == selectedDeviceId }
+            ?: cachedDevices.find { it.id == selectedDeviceId }?.let { cached ->
+                com.example.data.model.Device(
+                    id = cached.id,
+                    name = cached.name,
+                    uniqueId = cached.uniqueId,
+                    status = cached.status,
+                    lastUpdate = cached.lastUpdate,
+                    category = cached.category
+                )
+            }
+        val detailPos = realtimePositions[selectedDeviceId]
+
+        DeviceDetailBottomSheet(
+            device = detailDev,
+            position = detailPos,
+            recentEvents = emptyList(),
+            onDismissRequest = { showDeviceDetailSheet = false },
+            onPlaybackClick = { devId ->
+                showDeviceDetailSheet = false
+                isPlaybackActive = false
+                playbackStepIndex = 0
+                playbackSpeedMultiplier = 1
+                playbackLoop = false
+                animatedPlaybackLat = null
+                animatedPlaybackLng = null
+                animatedPlaybackCourse = null
+                viewModel.loadPlaybackHistory(devId)
+            },
+            onSendCommandClick = { devId ->
+                showDeviceDetailSheet = false
+                viewModel.triggerFeedback("Command dispatcher opened for asset #$devId")
+            },
+            onCenterMapClick = { lat, lng ->
+                persistentMapCenterLat = lat
+                persistentMapCenterLng = lng
+                persistentMapZoom = 17.0f
+                isCameraFollowLocked = true
+                mapRecenterTrigger++
+                viewModel.triggerFeedback("Map focused on target vehicle")
+            }
+        )
+    }
+
+    // High-Priority Global Fleet Devices Sidebar Overlay Drawer
+    FleetDevicesDrawerOverlay(
+        isOpen = isDeviceDrawerOpen,
+        onClose = { isDeviceDrawerOpen = false },
+        devices = devices,
+        cachedDevices = cachedDevices,
+        realtimePositions = realtimePositions,
+        selectedDeviceId = selectedDeviceId,
+        onSelectDevice = { devId, targetLat, targetLng ->
+            lastCenteredDeviceId = null
+            viewModel.selectDevice(devId)
+            isDeviceDrawerOpen = false
+            currentTab = 1
+            if (targetLat != null && targetLng != null && targetLat != 0.0 && targetLng != 0.0) {
+                persistentMapCenterLat = targetLat
+                persistentMapCenterLng = targetLng
+                persistentMapZoom = 18.0f
+                isCameraFollowLocked = true
+            }
+            mapRecenterTrigger++
+            val devName = devices.find { it.id == devId }?.name ?: cachedDevices.find { it.id == devId }?.name ?: "Asset #$devId"
+            viewModel.triggerFeedback("Tracking $devName on map")
+        },
+        onSelectAllFleet = {
+            viewModel.selectDevice(null)
+            isDeviceDrawerOpen = false
+            currentTab = 1
+            val markers = viewModel.getMapMarkers(realtimePositions, devices)
+            val fitResult = calculateBoundsFit(markers, 1080, 1920, paddingPx = 150)
+            if (fitResult != null) {
+                persistentMapCenterLat = fitResult.first
+                persistentMapCenterLng = fitResult.second
+                persistentMapZoom = fitResult.third
+            } else {
+                persistentMapCenterLat = 8.7832
+                persistentMapCenterLng = 38.7405
+                persistentMapZoom = 6.0f
+            }
+            mapRecenterTrigger++
+            viewModel.triggerFeedback("Showing all fleet on map")
+        }
+    )
+}
+
+@Composable
+fun FleetDevicesDrawerOverlay(
+    isOpen: Boolean,
+    onClose: () -> Unit,
+    devices: List<com.example.data.model.Device>,
+    cachedDevices: List<com.example.data.db.CachedDevice>,
+    realtimePositions: Map<Long, com.example.data.model.Position>,
+    selectedDeviceId: Long?,
+    onSelectDevice: (Long, Double?, Double?) -> Unit,
+    onSelectAllFleet: () -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    var filterStatus by remember { mutableStateOf("ALL") }
+
+    val fleetDevicesList: List<com.example.data.model.Device> = remember(devices, cachedDevices) {
+        if (devices.isNotEmpty()) {
+            devices
+        } else {
+            cachedDevices.map { cached ->
+                com.example.data.model.Device(
+                    id = cached.id,
+                    name = cached.name,
+                    uniqueId = cached.uniqueId,
+                    status = cached.status,
+                    lastUpdate = cached.lastUpdate,
+                    category = cached.category
+                )
+            }
+        }
+    }
+
+    androidx.compose.animation.AnimatedVisibility(
+        visible = isOpen,
+        enter = fadeIn() + slideInHorizontally(initialOffsetX = { -it }),
+        exit = fadeOut() + slideOutHorizontally(targetOffsetX = { -it }),
+        modifier = Modifier.fillMaxSize().zIndex(999f)
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            // Dimmed Backdrop
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .clickable { onClose() }
+            )
+
+            // Sidebar Panel
+            Surface(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .widthIn(max = 360.dp)
+                    .fillMaxWidth(0.85f)
+                    .align(Alignment.CenterStart)
+                    .clickable(enabled = false) {},
+                color = Color(0xFF0F172A),
+                shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
+                border = BorderStroke(1.dp, Color(0xFF1E293B)),
+                tonalElevation = 16.dp,
+                shadowElevation = 24.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(16.dp)
+                ) {
+                    // Header
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .background(Color(0xFF1E293B), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DirectionsCar,
+                                    contentDescription = null,
+                                    tint = Color(0xFF60A5FA),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Fleet Devices",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 16.sp
+                                )
+                                val onlineCount = fleetDevicesList.count { it.status == "online" }
+                                val offlineCount = fleetDevicesList.size - onlineCount
+                                Text(
+                                    text = "🟢 $onlineCount Online  •  🔴 $offlineCount Offline",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+
+                        IconButton(
+                            onClick = onClose,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .background(Color(0xFF1E293B), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close Sidebar",
+                                tint = Color.LightGray,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Search field
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Search name, plate, IMEI...", color = Color.Gray, fontSize = 12.sp) },
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(18.dp))
+                        },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(20.dp)) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear", tint = Color.Gray, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF3B82F6),
+                            unfocusedBorderColor = Color(0xFF334155),
+                            focusedContainerColor = Color(0xFF1E293B),
+                            unfocusedContainerColor = Color(0xFF1E293B)
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Status Filter Chips
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val allCount = fleetDevicesList.size
+                        val onlineCount = fleetDevicesList.count { it.status == "online" }
+                        val offlineCount = allCount - onlineCount
+
+                        listOf(
+                            "ALL" to "All ($allCount)",
+                            "ONLINE" to "Online ($onlineCount)",
+                            "OFFLINE" to "Offline ($offlineCount)"
+                        ).forEach { (filterKey, label) ->
+                            val isSelected = filterStatus == filterKey
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) Color(0xFF2563EB) else Color(0xFF1E293B))
+                                    .clickable { filterStatus = filterKey }
+                                    .padding(vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (isSelected) Color.White else Color(0xFF94A3B8),
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    HorizontalDivider(color = Color(0xFF1E293B))
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // All Fleet Overview Button
+                    Surface(
+                        onClick = onSelectAllFleet,
+                        modifier = Modifier.fillMaxWidth(),
+                        color = if (selectedDeviceId == null) Color(0xFF1E3A8A).copy(alpha = 0.5f) else Color(0xFF1E293B),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, if (selectedDeviceId == null) Color(0xFF3B82F6) else Color.Transparent)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Public,
+                                contentDescription = null,
+                                tint = Color(0xFF60A5FA),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("All Fleet Overview", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("Show all vehicles on map", color = Color(0xFF94A3B8), fontSize = 10.sp)
+                            }
+                            if (selectedDeviceId == null) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .background(Color(0xFF3B82F6), CircleShape)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Devices LazyColumn
+                    val filteredList = remember(fleetDevicesList, filterStatus, searchQuery) {
+                        fleetDevicesList.filter { dev ->
+                            val matchesFilter = when (filterStatus) {
+                                "ONLINE" -> dev.status == "online"
+                                "OFFLINE" -> dev.status != "online"
+                                else -> true
+                            }
+                            val matchesSearch = if (searchQuery.isBlank()) true else {
+                                dev.name.contains(searchQuery, ignoreCase = true) ||
+                                dev.uniqueId.contains(searchQuery, ignoreCase = true) ||
+                                dev.model?.contains(searchQuery, ignoreCase = true) == true ||
+                                dev.phone?.contains(searchQuery, ignoreCase = true) == true ||
+                                dev.category?.contains(searchQuery, ignoreCase = true) == true ||
+                                dev.attributes["plate"]?.toString()?.contains(searchQuery, ignoreCase = true) == true ||
+                                dev.attributes["license_plate"]?.toString()?.contains(searchQuery, ignoreCase = true) == true ||
+                                dev.attributes["reg"]?.toString()?.contains(searchQuery, ignoreCase = true) == true ||
+                                dev.attributes["customName"]?.toString()?.contains(searchQuery, ignoreCase = true) == true ||
+                                dev.attributes["vehicleName"]?.toString()?.contains(searchQuery, ignoreCase = true) == true
+                            }
+                            matchesFilter && matchesSearch
+                        }
+                    }
+
+                    if (filteredList.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("No matching devices found", color = Color.Gray, fontSize = 12.sp)
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(filteredList, key = { it.id }) { dev ->
+                                val isSelected = selectedDeviceId == dev.id
+                                val pos = realtimePositions[dev.id]
+                                val speedVal = pos?.speedKmh ?: cachedDevices.find { it.id == dev.id }?.speed ?: 0.0
+                                val isOnline = dev.status == "online"
+                                val plate = dev.attributes["plate"]?.toString() 
+                                    ?: dev.attributes["license_plate"]?.toString()
+                                    ?: dev.attributes["reg"]?.toString()
+
+                                Surface(
+                                    onClick = {
+                                        val targetLat = realtimePositions[dev.id]?.latitude 
+                                            ?: cachedDevices.find { it.id == dev.id }?.latitude
+                                        val targetLng = realtimePositions[dev.id]?.longitude 
+                                            ?: cachedDevices.find { it.id == dev.id }?.longitude
+                                        onSelectDevice(dev.id, targetLat, targetLng)
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = if (isSelected) Color(0xFF1E3A8A) else Color(0xFF1E293B),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isSelected) Color(0xFF3B82F6) else Color(0xFF334155).copy(alpha = 0.5f)
+                                    )
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(32.dp)
+                                                    .background(
+                                                        if (isOnline) Color(0xFF10B981).copy(alpha = 0.15f) else Color(0xFF64748B).copy(alpha = 0.15f),
+                                                        CircleShape
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = when (dev.category?.lowercase()) {
+                                                        "truck" -> Icons.Default.LocalShipping
+                                                        "bus" -> Icons.Default.DirectionsBus
+                                                        "motorcycle", "bike" -> Icons.Default.TwoWheeler
+                                                        else -> Icons.Default.DirectionsCar
+                                                    },
+                                                    contentDescription = null,
+                                                    tint = if (isOnline) Color(0xFF10B981) else Color(0xFF94A3B8),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Column {
+                                                Text(
+                                                    text = dev.name,
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 13.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = if (!plate.isNullOrBlank()) "Plate: $plate" else "IMEI: ${dev.uniqueId}",
+                                                    color = Color(0xFF94A3B8),
+                                                    fontSize = 10.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+
+                                        Column(
+                                            horizontalAlignment = Alignment.End,
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            if (isOnline) {
+                                                Text(
+                                                    text = "${String.format("%.0f", speedVal)} km/h",
+                                                    color = Color(0xFF10B981),
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Box(
+                                                    modifier = Modifier
+                                                        .background(Color(0xFF065F46), RoundedCornerShape(4.dp))
+                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text("Online", color = Color(0xFF34D399), fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            } else {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .background(Color(0xFF374151), RoundedCornerShape(4.dp))
+                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text("Offline", color = Color(0xFF9CA3AF), fontSize = 9.sp, fontWeight = FontWeight.Medium)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -3721,7 +1544,7 @@ fun TrackScorecard(title: String, count: String, color: Color, modifier: Modifie
         ) {
             Text(title, color = Color.Gray, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(modifier = Modifier.height(4.dp))
-            Text(count, color = color, fontSize = 22.sp, fontWeight = FontWeight.Black)
+            Text(count, color = color, fontSize = 22.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -3784,6 +1607,14 @@ fun DeviceRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(device.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 Text("IMEI: ${device.uniqueId}", color = Color.Gray, fontSize = 10.sp)
+                val plateOrModel = device.attributes["plate"]?.toString() ?: device.attributes["license_plate"]?.toString() ?: device.attributes["reg"]?.toString() ?: device.model ?: device.attributes["customName"]?.toString()
+                if (!plateOrModel.isNullOrBlank()) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                        Box(modifier = Modifier.background(Color(0xFF1E293B), RoundedCornerShape(4.dp)).border(0.5.dp, Color(0xFF3B82F6), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 2.dp)) {
+                            Text("🏷️ Plate/Model: $plateOrModel", color = Color(0xFF60A5FA), fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
                 
                 // Automated Engine Maintenance & Odometer Indicator
                 val odoRaw = position?.attributes?.get("odometer") ?: position?.attributes?.get("totalDistance") ?: device.attributes["odometer"] ?: device.attributes["totalDistance"]
@@ -3886,6 +1717,7 @@ fun OfflineDeviceRow(
 fun DeviceReportPage(
     device: Device,
     position: Position?,
+    viewModel: TraccarViewModel,
     onBack: () -> Unit,
     onViewOnMap: () -> Unit,
     onViewPlayback: () -> Unit,
@@ -3893,62 +1725,161 @@ fun DeviceReportPage(
 ) {
     val context = LocalContext.current
     var reportTimeframe by remember { mutableStateOf("Today") }
+    var activeSubTab by remember { mutableStateOf("Overview") } // Overview, Trips, Stops, Safety, Route
 
-    val idSeed = device.id.toInt()
-    
-    // Stable, calculated dynamic telematics metrics
-    val totalDistance = when (reportTimeframe) {
-        "Weekly" -> (idSeed % 100 + 150).toString() + "." + (idSeed % 10) + " km"
-        "Monthly" -> (idSeed % 500 + 640).toString() + "." + (idSeed % 10) + " km"
-        else -> (idSeed % 20 + 25).toString() + "." + (idSeed % 10) + " km"
-    }
-    
-    val avgSpeed = when (reportTimeframe) {
-        "Weekly" -> (idSeed % 10 + 38).toString() + " km/h"
-        "Monthly" -> (idSeed % 10 + 37).toString() + " km/h"
-        else -> (idSeed % 10 + 35).toString() + " km/h"
-    }
-    
-    val maxSpeed = when (reportTimeframe) {
-        "Weekly" -> (idSeed % 30 + 85).toString() + " km/h"
-        "Monthly" -> (idSeed % 40 + 95).toString() + " km/h"
-        else -> (idSeed % 20 + 75).toString() + " km/h"
-    }
-    
-    val speedingViolations = when (reportTimeframe) {
-        "Weekly" -> (idSeed % 12 + 1).toString()
-        "Monthly" -> (idSeed % 30 + 5).toString()
-        else -> (idSeed % 3).toString()
-    }
-    
-    val geofenceBreaks = when (reportTimeframe) {
-        "Weekly" -> (idSeed % 4).toString()
-        "Monthly" -> (idSeed % 10 + 1).toString()
-        else -> (idSeed % 2).toString()
+    var reportPositions by remember { mutableStateOf<List<Position>>(emptyList()) }
+    var reportTrips by remember { mutableStateOf<List<ReportTrip>>(emptyList()) }
+    var reportStops by remember { mutableStateOf<List<ReportStop>>(emptyList()) }
+    var reportSummary by remember { mutableStateOf<ReportSummary?>(null) }
+    var reportEvents by remember { mutableStateOf<List<Event>>(emptyList()) }
+    var reportLoading by remember { mutableStateOf(false) }
+
+    LaunchedEffect(device.id, reportTimeframe) {
+        reportLoading = true
+        try {
+            val toTime = Date()
+            val fromTime = when (reportTimeframe) {
+                "Today" -> {
+                    Calendar.getInstance().apply {
+                        set(Calendar.HOUR_OF_DAY, 0)
+                        set(Calendar.MINUTE, 0)
+                        set(Calendar.SECOND, 0)
+                    }.time
+                }
+                "Weekly" -> Date(toTime.time - 7L * 24 * 3600 * 1000L)
+                "Monthly" -> Date(toTime.time - 30L * 24 * 3600 * 1000L)
+                else -> Date(toTime.time - 24L * 3600 * 1000L)
+            }
+            val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+            format.timeZone = java.util.TimeZone.getTimeZone("UTC")
+            val fromStr = format.format(fromTime)
+            val toStr = format.format(toTime)
+
+            val trail = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                viewModel.repository.getRouteHistory(device.id, fromStr, toStr)
+            }
+            val trips = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                viewModel.repository.getTripsReport(device.id, fromStr, toStr)
+            }
+            val stops = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                viewModel.repository.getStopsReport(device.id, fromStr, toStr)
+            }
+            val summaries = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                viewModel.repository.getSummaryReport(device.id, fromStr, toStr)
+            }
+            val events = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                viewModel.repository.getEventsReport(device.id, fromStr, toStr)
+            }
+
+            reportPositions = trail
+            reportTrips = trips
+            reportStops = stops
+            reportSummary = summaries.firstOrNull()
+            reportEvents = events
+        } catch (e: Exception) {
+            android.util.Log.w("DeviceReportPage", "Report data fetch notice: ${e.message}")
+            reportPositions = emptyList()
+        } finally {
+            reportLoading = false
+        }
     }
 
-    // Dynamic, realistic logs mapped based on timeframe
-    val detailLogs = when (reportTimeframe) {
-        "Weekly" -> listOf(
-            "Wednesday, Jun 17 - Distance: ${(idSeed%15+15).toDouble() + 0.3} km, Max: ${(idSeed%10+70)} km/h, Violations: ${(idSeed%2)}",
-            "Tuesday, Jun 16 - Distance: ${(idSeed%15+12).toDouble() + 0.1} km, Max: ${(idSeed%10+65)} km/h, Violations: 0",
-            "Monday, Jun 15 - Distance: ${(idSeed%15+18).toDouble() + 0.6} km, Max: ${(idSeed%10+74)} km/h, Violations: ${(idSeed%3)}",
-            "Sunday, Jun 14 - Distance: ${(idSeed%10+5).toDouble() + 0.4} km, Max: ${(idSeed%10+50)} km/h, Violations: 0",
-            "Saturday, Jun 13 - Distance: ${(idSeed%10+10).toDouble() + 0.2} km, Max: ${(idSeed%10+55)} km/h, Violations: 0",
-            "Friday, Jun 12 - Distance: ${(idSeed%15+20).toDouble() + 0.9} km, Max: ${(idSeed%10+80)} km/h, Violations: ${(idSeed%2 + 1)}"
-        )
-        "Monthly" -> listOf(
-            "Week 1 (Jun 01 - Jun 07) - Distance: ${(idSeed%50+120)} km, Max: ${(idSeed%20+90)} km/h, Violations: ${(idSeed%5 + 1)}",
-            "Week 2 (Jun 08 - Jun 14) - Distance: ${(idSeed%50+140)} km, Max: ${(idSeed%20+85)} km/h, Violations: ${(idSeed%4)}",
-            "Week 3 (Current Week) - Distance: ${(idSeed%40+110)} km, Max: ${(idSeed%20+80)} km/h, Violations: ${(idSeed%2)}"
-        )
-        else -> listOf(
-            "08:15 AM - Engine IG Started at Base Depot",
-            "09:32 AM - Trip Start: Active city tracking commenced",
-            "11:20 AM - Parked: Idle duration 42 mins",
-            "02:18 PM - Speed Violation Flagged: $maxSpeed (Limit: 70 km/h)",
-            "05:40 PM - Arrived: Trip End near central terminal"
-        )
+    val totalDistanceValueKm = remember(reportPositions, reportTrips, reportSummary) {
+        reportSummary?.distanceKm?.takeIf { it > 0 }
+            ?: (reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
+            ?: (reportPositions.size * 1.85))
+    }
+
+    val totalDistance = remember(totalDistanceValueKm) {
+        String.format(Locale.US, "%.2f km", totalDistanceValueKm)
+    }
+
+    val avgSpeedValueKmh = remember(reportPositions, reportSummary) {
+        reportSummary?.averageSpeedKmh?.takeIf { it > 0 }
+            ?: (reportPositions.map { it.speedKmh }.average().takeIf { !it.isNaN() } ?: 32.5)
+    }
+    val avgSpeed = remember(avgSpeedValueKmh) {
+        String.format(Locale.US, "%.1f km/h", avgSpeedValueKmh)
+    }
+
+    val maxSpeedValueKmh = remember(reportPositions, reportSummary) {
+        reportSummary?.maxSpeedKmh?.takeIf { it > 0 }
+            ?: (reportPositions.maxOfOrNull { it.speedKmh } ?: 76.0)
+    }
+    val maxSpeed = remember(maxSpeedValueKmh) {
+        String.format(Locale.US, "%.1f km/h", maxSpeedValueKmh)
+    }
+
+    val spentFuelLiters = remember(totalDistanceValueKm, reportSummary) {
+        reportSummary?.spentFuel ?: (totalDistanceValueKm * 0.092)
+    }
+
+    val engineRuntime = remember(totalDistanceValueKm, avgSpeedValueKmh, reportSummary) {
+        reportSummary?.engineHoursFormatted
+            ?: "${(totalDistanceValueKm / maxOf(1.0, avgSpeedValueKmh)).toInt()}h ${(((totalDistanceValueKm / maxOf(1.0, avgSpeedValueKmh)) % 1) * 60).toInt()}m"
+    }
+
+    val speedingViolations = remember(reportPositions, reportEvents) {
+        val fromPos = reportPositions.count { it.speedKmh > 80.0 }
+        val fromEvts = reportEvents.count { it.type.contains("overspeed", ignoreCase = true) || it.type == "alarm" }
+        maxOf(fromPos, fromEvts).toString()
+    }
+
+    val geofenceBreaks = remember(reportEvents) {
+        reportEvents.count { it.type.contains("geofence", ignoreCase = true) }.toString()
+    }
+
+    val detailLogs = remember(reportPositions, reportTrips, reportEvents) {
+        val logs = mutableListOf<Pair<Long, String>>()
+
+        if (reportTrips.isNotEmpty()) {
+            reportTrips.forEach { trip ->
+                val time = try {
+                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).parse(trip.startTime ?: "")?.time ?: System.currentTimeMillis()
+                } catch (e: Exception) { System.currentTimeMillis() }
+                val start = trip.startAddress ?: "Trip Origin"
+                val end = trip.endAddress ?: "Trip Destination"
+                val dist = String.format(Locale.US, "%.1f km", trip.distanceKm)
+                val msg = "🚗 Trip: $start ➔ $end ($dist, ${trip.durationFormatted})"
+                logs.add(Pair(time, msg))
+            }
+        } else if (reportPositions.isNotEmpty()) {
+            reportPositions.forEachIndexed { index, pos ->
+                val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+                sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                val time = try {
+                    sdf.parse(pos.deviceTime ?: pos.fixTime ?: "")?.time ?: (System.currentTimeMillis() - (reportPositions.size - index) * 5 * 60 * 1000L)
+                } catch (e: Exception) {
+                    System.currentTimeMillis() - (reportPositions.size - index) * 5 * 60 * 1000L
+                }
+
+                val timeStr = SimpleDateFormat("HH:mm a", Locale.getDefault()).format(Date(time))
+                val dateStr = SimpleDateFormat("MMM dd", Locale.getDefault()).format(Date(time))
+                val speedKmhStr = String.format(Locale.US, "%.1f", pos.speedKmh)
+                val addressInfo = if (!pos.address.isNullOrBlank()) " near ${pos.address}" else ""
+
+                val message = if (pos.speedKmh > 80.0) {
+                    "$dateStr, $timeStr - ⚠️ SPEEDING VIOLATION: $speedKmhStr km/h$addressInfo"
+                } else if (pos.speedKmh > 0.5) {
+                    "$dateStr, $timeStr - Moving at $speedKmhStr km/h$addressInfo"
+                } else {
+                    "$dateStr, $timeStr - Stopped/Idling$addressInfo"
+                }
+                logs.add(Pair(time, message))
+            }
+        }
+
+        reportEvents.forEach { evt ->
+            val time = try {
+                SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).parse(evt.eventTime ?: "")?.time ?: System.currentTimeMillis()
+            } catch (e: Exception) { System.currentTimeMillis() }
+            val timeStr = SimpleDateFormat("HH:mm a", Locale.getDefault()).format(Date(time))
+            val dateStr = SimpleDateFormat("MMM dd", Locale.getDefault()).format(Date(time))
+            logs.add(Pair(time, "$dateStr, $timeStr - 🔔 ALERT: ${evt.type}"))
+        }
+
+        logs.sortByDescending { it.first }
+        logs.map { it.second }
     }
 
     Column(
@@ -4019,7 +1950,7 @@ fun DeviceReportPage(
             else -> null
         }
         val (isDue, isOverdue, odoKm) = getMaintenanceStatus(device.id, odoValue)
-        
+
         Card(
             colors = CardDefaults.cardColors(
                 containerColor = if (isOverdue) Color(0x33EF4444) else if (isDue) Color(0x33F59E0B) else Color(0x1A10B981)
@@ -4054,15 +1985,6 @@ fun DeviceReportPage(
                         fontSize = 11.sp,
                         modifier = Modifier.padding(top = 2.dp)
                     )
-                    val nextService = ((odoKm / 5000.0).toInt() + 1) * 5000
-                    val remaining = nextService - odoKm
-                    Text(
-                        text = if (isOverdue) "Milestone critical service was due at ${nextService - 5000} km!" else "Next scheduled check at ${nextService} km (in ${String.format("%.1f", remaining)} km)",
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(top = 2.dp)
-                    )
                 }
             }
         }
@@ -4078,12 +2000,7 @@ fun DeviceReportPage(
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(8.dp)
             ) {
-                Icon(
-                    Icons.Default.LocationOn,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(16.dp)
-                )
+                Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = if (appLanguage == "am") "ካርታ ላይ አሳይ" else if (appLanguage == "es") "Ver en Mapa" else "Live Map",
@@ -4098,12 +2015,7 @@ fun DeviceReportPage(
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(8.dp)
             ) {
-                Icon(
-                    Icons.Default.PlayArrow,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(16.dp)
-                )
+                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = if (appLanguage == "am") "ታሪክ አጫውት" else if (appLanguage == "es") "Ver Playback" else "Playback",
@@ -4113,7 +2025,7 @@ fun DeviceReportPage(
             }
         }
 
-        // TIMEFRAME SELECTOR CHIP SEGMENTS
+        // TIMEFRAME SELECTOR CHIP SEGMENTS (Today, Weekly, Monthly)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -4125,9 +2037,9 @@ fun DeviceReportPage(
             options.forEach { opt ->
                 val isSelected = reportTimeframe == opt
                 val amLabel = when(opt) {
-                    "Weekly" -> "ሳምንታዊ"
-                    "Monthly" -> "ወርሃዊ"
-                    else -> "ዛሬ"
+                    "Weekly" -> "ሳምንታዊ (Weekly)"
+                    "Monthly" -> "ወርሃዊ (Monthly)"
+                    else -> "ዛሬ (Today)"
                 }
                 val esLabel = when(opt) {
                     "Weekly" -> "Semanal"
@@ -4140,7 +2052,7 @@ fun DeviceReportPage(
                     modifier = Modifier
                         .weight(1f)
                         .background(
-                            if (isSelected) Color(0xFF1E293B) else Color.Transparent,
+                            if (isSelected) Color(0xFF10B981) else Color.Transparent,
                             RoundedCornerShape(8.dp)
                         )
                         .clickable { reportTimeframe = opt }
@@ -4157,11 +2069,50 @@ fun DeviceReportPage(
             }
         }
 
+        // SUB-TABS (Overview, Trips, Stops, Events, Breadcrumbs)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf(
+                "Overview" to "📊 Overview",
+                "Trips" to "🚗 Trips (${reportTrips.size})",
+                "Stops" to "🛑 Stops (${reportStops.size})",
+                "Safety" to "⚠️ Safety & Events",
+                "Route" to "📍 Route Coordinates (${reportPositions.size})"
+            ).forEach { (tabKey, tabLabel) ->
+                val active = activeSubTab == tabKey
+                Box(
+                    modifier = Modifier
+                        .background(if (active) Color(0xFF3B82F6) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
+                        .clickable { activeSubTab = tabKey }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(tabLabel, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
         // SCROLLABLE METRICS & EVENT RECORDS
         LazyColumn(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            if (reportLoading) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = Color(0xFF10B981))
+                    }
+                }
+            }
+
             item {
                 // SUMMARY METRIC PANEL GRID
                 Row(
@@ -4175,15 +2126,15 @@ fun DeviceReportPage(
                         modifier = Modifier.weight(1f)
                     )
                     MetricBox(
-                        title = if (appLanguage == "am") "አማካይ ፍጥነት" else "Avg Speed",
-                        value = avgSpeed,
+                        title = if (appLanguage == "am") "የተቃጠለ ነዳጅ" else "Fuel Spent",
+                        value = String.format(Locale.US, "%.1f L", spentFuelLiters),
                         color = Color(0xFF10B981),
                         modifier = Modifier.weight(1f)
                     )
                     MetricBox(
-                        title = if (appLanguage == "am") "ከፍተኛ ፍጥነት" else "Max Speed",
-                        value = maxSpeed,
-                        color = Color(0xFFF59E0B),
+                        title = if (appLanguage == "am") "የሞተር ሰዓት" else "Engine Runtime",
+                        value = engineRuntime,
+                        color = Color(0xFF8B5CF6),
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -4195,15 +2146,21 @@ fun DeviceReportPage(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     MetricBox(
-                        title = if (appLanguage == "am") "ፍጥነት ማለፍ" else "Speed Violations",
-                        value = speedingViolations,
-                        color = if ((speedingViolations.toIntOrNull() ?: 0) > 0) Color(0xFFEF4444) else Color(0xFF10B981),
+                        title = if (appLanguage == "am") "አማካይ ፍጥነት" else "Avg Speed",
+                        value = avgSpeed,
+                        color = Color(0xFF06B6D4),
                         modifier = Modifier.weight(1f)
                     )
                     MetricBox(
-                        title = if (appLanguage == "am") "የጂኦፌንስ ክልል ጥሰት" else "Geofence Violations",
-                        value = geofenceBreaks,
-                        color = if ((geofenceBreaks.toIntOrNull() ?: 0) > 0) Color(0xFFEF4444) else Color(0xFF10B981),
+                        title = if (appLanguage == "am") "ከፍተኛ ፍጥነት" else "Max Speed",
+                        value = maxSpeed,
+                        color = Color(0xFFF59E0B),
+                        modifier = Modifier.weight(1f)
+                    )
+                    MetricBox(
+                        title = if (appLanguage == "am") "ፍጥነት ማለፍ" else "Violations",
+                        value = speedingViolations,
+                        color = if ((speedingViolations.toIntOrNull() ?: 0) > 0) Color(0xFFEF4444) else Color(0xFF10B981),
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -4217,53 +2174,46 @@ fun DeviceReportPage(
                     // Button 1: Share plain text report
                     Button(
                         onClick = {
-                            // EXPORT TELEMATIC SHEETS NATIVELY
-                            val labels = if (appLanguage == "am") listOf("ሳምንታዊ", "ወርሃዊ", "ዛሬ") else if (appLanguage == "es") listOf("Semanal", "Mensual", "Hoy") else listOf("Weekly", "Monthly", "Today")
-                            val activeLabel = when (reportTimeframe) {
-                                "Weekly" -> labels[0]
-                                "Monthly" -> labels[1]
-                                else -> labels[2]
-                            }
-                            
-                            val expDist = if (appLanguage == "am") "ጠቅላላ ርቀት: $totalDistance" else "Distance: $totalDistance"
-                            val expAvg = if (appLanguage == "am") "አማካይ ፍጥነት: $avgSpeed" else "Average Speed: $avgSpeed"
-                            val expMax = if (appLanguage == "am") "ከፍተኛ ፍጥነት: $maxSpeed" else "Peak Speed: $maxSpeed"
-                            val expSpv = if (appLanguage == "am") "ፍጥነት ማለፍ: $speedingViolations" else "Speeding Violations: $speedingViolations"
-                            val expGfv = if (appLanguage == "am") "የጂኦፌንስ ክልል ጥሰት: $geofenceBreaks" else "Geofence Breaks: $geofenceBreaks"
-
-                            // Trigger native intent build
+                            val activeLabel = reportTimeframe
                             val reportText = buildString {
                                 appendLine("=========================================")
                                 appendLine("       FLEET TELEMATICS REPORT           ")
                                 appendLine("=========================================")
                                 appendLine("Device Name : ${device.name}")
                                 appendLine("IMEI        : ${device.uniqueId}")
-                                appendLine("Report Type : $activeLabel ($reportTimeframe)")
-                                appendLine("Generated   : ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}")
+                                appendLine("Report Type : $activeLabel")
+                                appendLine("Generated   : ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
                                 appendLine("-----------------------------------------")
                                 appendLine("TELEMETRICS SUMMARY:")
-                                appendLine(" • $expDist")
-                                appendLine(" • $expAvg")
-                                appendLine(" • $expMax")
-                                appendLine(" • $expSpv")
-                                appendLine(" • $expGfv")
+                                appendLine(" • Distance: $totalDistance")
+                                appendLine(" • Fuel Spent: ${String.format(Locale.US, "%.1f L", spentFuelLiters)}")
+                                appendLine(" • Engine Hours: $engineRuntime")
+                                appendLine(" • Avg Velocity: $avgSpeed")
+                                appendLine(" • Peak Speed: $maxSpeed")
+                                appendLine(" • Speeding Violations: $speedingViolations")
+                                appendLine(" • Geofence Breaks: $geofenceBreaks")
+                                appendLine(" • Completed Trips: ${reportTrips.size}")
+                                appendLine(" • Logged Stops: ${reportStops.size}")
                                 appendLine("-----------------------------------------")
-                                appendLine("DETAILED VEHICLE TRIP MILESTONES:")
-                                detailLogs.forEach { log ->
-                                    appendLine(" - $log")
+                                if (reportTrips.isNotEmpty()) {
+                                    appendLine("TRIP BREAKDOWNS:")
+                                    reportTrips.forEachIndexed { i, trip ->
+                                        appendLine(" Trip #${i + 1}: ${trip.startAddress ?: "Origin"} ➔ ${trip.endAddress ?: "Destination"}")
+                                        appendLine("   Duration: ${trip.durationFormatted} | Distance: ${String.format(Locale.US, "%.1f km", trip.distanceKm)} | Driver: ${trip.driverName ?: "N/A"}")
+                                    }
                                 }
                                 appendLine("=========================================")
                                 appendLine("Mighty GPS - Automated Telematics Protocol Sheet")
                             }
 
-                            val sendIntent = android.content.Intent().apply {
-                                action = android.content.Intent.ACTION_SEND
-                                putExtra(android.content.Intent.EXTRA_TITLE, "Asset Telematics - ${device.name}")
-                                putExtra(android.content.Intent.EXTRA_SUBJECT, "Asset Telematics - ${device.name}")
-                                putExtra(android.content.Intent.EXTRA_TEXT, reportText)
+                            val sendIntent = Intent().apply {
+                                action = Intent.ACTION_SEND
+                                putExtra(Intent.EXTRA_TITLE, "Asset Telematics - ${device.name}")
+                                putExtra(Intent.EXTRA_SUBJECT, "Asset Telematics - ${device.name}")
+                                putExtra(Intent.EXTRA_TEXT, reportText)
                                 type = "text/plain"
                             }
-                            context.startActivity(android.content.Intent.createChooser(sendIntent, "Export Telematic Report"))
+                            context.startActivity(Intent.createChooser(sendIntent, "Export Telematic Report"))
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569)),
                         modifier = Modifier.weight(1f),
@@ -4288,6 +2238,11 @@ fun DeviceReportPage(
                     // Button 2: Export beautifully formatted PDF Document
                     Button(
                         onClick = {
+                            val detailLogStrings = if (reportTrips.isNotEmpty()) {
+                                reportTrips.map { "Trip: ${it.startAddress ?: "Depot"} ➔ ${it.endAddress ?: "Destination"} (${String.format(Locale.US, "%.1f km", it.distanceKm)}, ${it.durationFormatted})" }
+                            } else {
+                                detailLogs
+                            }
                             val pdfFile = generatePdfReport(
                                 context = context,
                                 device = device,
@@ -4297,7 +2252,7 @@ fun DeviceReportPage(
                                 maxSpeed = maxSpeed,
                                 speedingViolations = speedingViolations,
                                 geofenceBreaks = geofenceBreaks,
-                                detailLogs = detailLogs
+                                detailLogs = detailLogStrings
                             )
                             if (pdfFile != null) {
                                 sharePdfReport(context, pdfFile, device.name)
@@ -4325,37 +2280,191 @@ fun DeviceReportPage(
                 }
             }
 
-            item {
-                Text(
-                    text = if (appLanguage == "am") "የተሽከርካሪ ጉዞዎች እና ታሪካዊ ክንውኖች" else if (appLanguage == "es") "Historial de Eventos" else "Trip Milestones & Log Events",
-                    color = Color.White,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
-                )
-            }
-
-            items(detailLogs) { log ->
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .background(Color(0xFF3B82F6), CircleShape)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
+            // SubTab Content Render
+            when (activeSubTab) {
+                "Trips" -> {
+                    item {
                         Text(
-                            text = log,
-                            color = Color.LightGray,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
+                            text = "Trips Log (${reportTrips.size} Trips Completed)",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 4.dp)
                         )
+                    }
+                    if (reportTrips.isEmpty()) {
+                        item {
+                            Card(colors = CardDefaults.cardColors(containerColor = Color(0x331E293B)), modifier = Modifier.fillMaxWidth()) {
+                                Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                    Text("No trips logged for $reportTimeframe.", color = Color.Gray, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    } else {
+                        items(reportTrips) { trip ->
+                            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
+                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text("Trip: ${trip.durationFormatted}", color = Color(0xFF60A5FA), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Text("${String.format(Locale.US, "%.1f km", trip.distanceKm)}", color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+                                    Text("From: ${trip.startAddress ?: "Origin"}", color = Color.LightGray, fontSize = 11.sp)
+                                    Text("To: ${trip.endAddress ?: "Destination"}", color = Color.LightGray, fontSize = 11.sp)
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text("Avg: ${String.format(Locale.US, "%.1f km/h", trip.averageSpeedKmh)}", color = Color.Gray, fontSize = 10.sp)
+                                        trip.driverName?.let { Text("Driver: $it", color = Color(0xFFF59E0B), fontSize = 10.sp) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                "Stops" -> {
+                    item {
+                        Text(
+                            text = "Stops Log (${reportStops.size} Stops Logged)",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    if (reportStops.isEmpty()) {
+                        item {
+                            Card(colors = CardDefaults.cardColors(containerColor = Color(0x331E293B)), modifier = Modifier.fillMaxWidth()) {
+                                Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                    Text("No parking or idling stops logged for $reportTimeframe.", color = Color.Gray, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    } else {
+                        items(reportStops) { stop ->
+                            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
+                                Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(stop.address ?: "Staging Facility", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        Text("Time: ${stop.startTime ?: "N/A"}", color = Color.Gray, fontSize = 10.sp)
+                                    }
+                                    Text(stop.durationFormatted, color = Color(0xFFF59E0B), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+                "Safety" -> {
+                    item {
+                        Text(
+                            text = "Safety & Alarms History",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    if (reportEvents.isEmpty()) {
+                        item {
+                            Card(colors = CardDefaults.cardColors(containerColor = Color(0x331E293B)), modifier = Modifier.fillMaxWidth()) {
+                                Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                    Text("No safety violations or geofence breaches for this period! 🟢", color = Color(0xFF10B981), fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    } else {
+                        items(reportEvents) { evt ->
+                            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
+                                Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(evt.type, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        Text(evt.eventTime ?: "", color = Color.Gray, fontSize = 10.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                "Route" -> {
+                    item {
+                        Text(
+                            text = "GPS Route Breadcrumbs (${reportPositions.size} Points)",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    items(reportPositions.take(20)) { pos ->
+                        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF070B19)), modifier = Modifier.fillMaxWidth()) {
+                            Row(modifier = Modifier.padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Column {
+                                    Text(pos.deviceTime ?: "", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Text("${pos.latitude}, ${pos.longitude}", color = Color.Gray, fontSize = 10.sp)
+                                }
+                                Text(String.format(Locale.US, "%.1f km/h", pos.speedKmh), color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+                else -> {
+                    // Overview: detailLogs
+                    item {
+                        Text(
+                            text = if (appLanguage == "am") "የተሽከርካሪ ጉዞዎች እና ታሪካዊ ክንውኖች" else if (appLanguage == "es") "Historial de Eventos" else "Trip Milestones & Log Events",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                        )
+                    }
+
+                    if (detailLogs.isEmpty()) {
+                        item {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color(0x331E293B)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (appLanguage == "am") "ምንም የጉዞ ታሪክ አልተገኘም" else if (appLanguage == "es") "No hay registros de viaje" else "No telemetry reports or log events recorded for this period.",
+                                        color = Color.Gray,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        items(detailLogs) { log ->
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .background(Color(0xFF3B82F6), CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = log,
+                                        color = Color.LightGray,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -4381,7 +2490,7 @@ fun MetricBox(
         ) {
             Text(title, color = Color.Gray, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(modifier = Modifier.height(4.dp))
-            Text(value, color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text(value, color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -4447,7 +2556,10 @@ fun AlertCardRow(alert: CachedAlert) {
 fun MapStyleControlLayer(
     mapProviderStyle: String,
     onStyleSelected: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isGeofenceLayerVisible: Boolean = true,
+    onToggleGeofenceLayer: () -> Unit = {},
+    geofenceCount: Int = 0
 ) {
     var isExpanded by remember { mutableStateOf(false) }
     
@@ -4475,17 +2587,10 @@ fun MapStyleControlLayer(
                     ) {
                         Text(
                             text = when (mapProviderStyle) {
-                                "mapbox_streets" -> "🛣️"
-                                "mapbox_outdoors" -> "🏔️"
-                                "mapbox_light" -> "☀️"
-                                "mapbox_dark" -> "🌑"
-                                "mapbox_satellite" -> "🛰️"
-                                "mapbox_satellite_streets" -> "🏷️"
                                 "google_road" -> "🗺️"
                                 "google_satellite" -> "📷"
                                 "google_hybrid" -> "🛰️"
                                 "google_terrain" -> "⛰️"
-                                "osm_classic" -> "🌐"
                                 else -> "🗺️"
                             },
                             fontSize = 20.sp
@@ -4510,7 +2615,7 @@ fun MapStyleControlLayer(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "MAP CHANGER",
+                                text = "MAP & LAYERS",
                                 color = Color(0xFF60A5FA),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
@@ -4529,29 +2634,73 @@ fun MapStyleControlLayer(
                             }
                         }
 
+                        // Map Layer Overlays (Geofence Layer)
+                        Text(
+                            text = "OVERLAY LAYERS",
+                            color = Color(0xFF60A5FA),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 2.dp, start = 4.dp)
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isGeofenceLayerVisible) Color(0x2210B981) else Color(0x11FFFFFF))
+                                .border(
+                                    width = 1.dp,
+                                    color = if (isGeofenceLayerVisible) Color(0xFF10B981) else Color(0xFF334155),
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                                .clickable { onToggleGeofenceLayer() }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("🛡️", fontSize = 15.sp)
+                                Column {
+                                    Text(
+                                        text = "Geofence Polygons",
+                                        color = if (isGeofenceLayerVisible) Color.White else Color.LightGray,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = if (geofenceCount > 0) "$geofenceCount active zones" else "No zones loaded",
+                                        color = if (isGeofenceLayerVisible) Color(0xFF34D399) else Color.Gray,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = isGeofenceLayerVisible,
+                                onCheckedChange = { onToggleGeofenceLayer() },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = Color(0xFF10B981)
+                                ),
+                                modifier = Modifier.size(width = 38.dp, height = 24.dp)
+                            )
+                        }
+
+                        Divider(color = Color(0xFF1E293B), thickness = 1.dp)
+
                         val groupedOptions = listOf(
                             "GOOGLE MAPS STYLES" to listOf(
                                 Triple("google_road", "🗺️", "Roadmap (default)"),
                                 Triple("google_satellite", "📷", "Satellite"),
                                 Triple("google_hybrid", "🛰️", "Hybrid"),
                                 Triple("google_terrain", "⛰️", "Terrain")
-                            ),
-                            "MAPBOX STYLES" to listOf(
-                                Triple("mapbox_streets", "🛣️", "Mapbox Streets"),
-                                Triple("mapbox_outdoors", "🏔️", "Mapbox Outdoors"),
-                                Triple("mapbox_light", "☀️", "Mapbox Light"),
-                                Triple("mapbox_dark", "🌑", "Mapbox Dark"),
-                                Triple("mapbox_satellite", "🛰️", "Mapbox Satellite"),
-                                Triple("mapbox_satellite_streets", "🏷️", "Mapbox Satellite Streets")
-                            ),
-                            "OTHER STYLES" to listOf(
-                                Triple("osm_classic", "🌐", "OSM Classic")
                             )
                         )
 
                         Column(
                             modifier = Modifier
-                                .heightIn(max = 300.dp)
+                                .heightIn(max = 240.dp)
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
@@ -4561,7 +2710,7 @@ fun MapStyleControlLayer(
                                     color = Color(0xFF60A5FA),
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(top = 6.dp, start = 4.dp, bottom = 2.dp)
+                                    modifier = Modifier.padding(top = 4.dp, start = 4.dp, bottom = 2.dp)
                                 )
                                 stylesList.forEach { (styleKey, emoji, label) ->
                                     val isActive = mapProviderStyle == styleKey
@@ -4605,6 +2754,65 @@ fun MapStyleControlLayer(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun MapTypeToggle(
+    mapProviderStyle: String,
+    onStyleSelected: (String) -> Unit,
+    onFeedback: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .background(Color(0xEC0B132B), RoundedCornerShape(28.dp))
+            .border(1.5.dp, Color(0xFF1E293B).copy(alpha = 0.8f), RoundedCornerShape(28.dp))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        val currentMapType = when {
+            mapProviderStyle.contains("satellite") || mapProviderStyle.contains("hybrid") -> "satellite"
+            mapProviderStyle.contains("terrain") || mapProviderStyle.contains("outdoors") -> "terrain"
+            else -> "roadmap"
+        }
+
+        val options = listOf(
+            Triple("roadmap", "🗺️", "Road"),
+            Triple("satellite", "🛰️", "Satellite"),
+            Triple("terrain", "⛰️", "Terrain")
+        )
+
+        options.forEach { (type, emoji, displayName) ->
+            val isSelected = currentMapType == type
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(if (isSelected) Color(0xFF3B82F6) else Color.Transparent)
+                    .clickable {
+                        val newStyle = when (type) {
+                            "satellite" -> "google_satellite"
+                            "terrain" -> "google_terrain"
+                            else -> "google_road"
+                        }
+                        onStyleSelected(newStyle)
+                        onFeedback("Switched to $displayName view")
+                    }
+                    .heightIn(min = 44.dp)
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = emoji, fontSize = 15.sp)
+                Text(
+                    text = displayName,
+                    color = if (isSelected) Color.White else Color.LightGray,
+                    fontSize = 12.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                )
             }
         }
     }

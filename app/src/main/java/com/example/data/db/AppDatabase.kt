@@ -76,7 +76,10 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "saas_gps_tracker_db"
-                ).build()
+                )
+                .fallbackToDestructiveMigration()
+                .fallbackToDestructiveMigrationOnDowngrade()
+                .build()
                 INSTANCE = instance
                 instance
             }

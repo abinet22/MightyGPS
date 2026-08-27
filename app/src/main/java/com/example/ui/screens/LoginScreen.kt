@@ -18,6 +18,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -37,14 +38,15 @@ fun LoginScreen(
     viewModel: TraccarViewModel,
     onLoginSuccess: () -> Unit
 ) {
+    val context = LocalContext.current
     val authState by viewModel.authUIState.collectAsState()
     val scrollState = rememberScrollState()
     val keyboardController = LocalSoftwareKeyboardController.current
 
     // Input States
     val serverUrl = "http://mighty-gps.pro.et/"
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf(viewModel.sessionManager.email) }
+    var password by remember { mutableStateOf(viewModel.sessionManager.password) }
     var isPasswordVisible by remember { mutableStateOf(false) }
 
     // Intercept login success
@@ -68,22 +70,30 @@ fun LoginScreen(
     ) {
         // Background subtle abstract grid graphic
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val stepVal = 60.dp.toPx()
-            for (x in 0..size.width.toInt() step stepVal.toInt()) {
-                drawLine(
-                    color = Color(0x0A94A3B8),
-                    start = androidx.compose.ui.geometry.Offset(x.toFloat(), 0f),
-                    end = androidx.compose.ui.geometry.Offset(x.toFloat(), size.height),
-                    strokeWidth = 2f
-                )
-            }
-            for (y in 0..size.height.toInt() step stepVal.toInt()) {
-                drawLine(
-                    color = Color(0x0A94A3B8),
-                    start = androidx.compose.ui.geometry.Offset(0f, y.toFloat()),
-                    end = androidx.compose.ui.geometry.Offset(size.width, y.toFloat()),
-                    strokeWidth = 2f
-                )
+            val stepPx = 60.dp.toPx().toInt().coerceAtLeast(40)
+            val w = size.width.toInt()
+            val h = size.height.toInt()
+            if (w > 0 && h > 0) {
+                var x = 0
+                while (x <= w) {
+                    drawLine(
+                        color = Color(0x0A94A3B8),
+                        start = androidx.compose.ui.geometry.Offset(x.toFloat(), 0f),
+                        end = androidx.compose.ui.geometry.Offset(x.toFloat(), size.height),
+                        strokeWidth = 2f
+                    )
+                    x += stepPx
+                }
+                var y = 0
+                while (y <= h) {
+                    drawLine(
+                        color = Color(0x0A94A3B8),
+                        start = androidx.compose.ui.geometry.Offset(0f, y.toFloat()),
+                        end = androidx.compose.ui.geometry.Offset(size.width, y.toFloat()),
+                        strokeWidth = 2f
+                    )
+                    y += stepPx
+                }
             }
         }
 
@@ -237,7 +247,28 @@ fun LoginScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Diagnostic & Error Logs viewer button
+            TextButton(
+                onClick = {
+                    val intent = android.content.Intent(context, com.example.ui.CrashReportActivity::class.java).apply {
+                        putExtra(com.example.ui.CrashReportActivity.EXTRA_CRASH_LOG, com.example.util.CrashLogger.getSavedCrashLog(context) ?: com.example.util.CrashLogger.getLiveDiagnostics(context))
+                    }
+                    context.startActivity(intent)
+                },
+                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF60A5FA))
+            ) {
+                Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "View App Logs & Error Diagnostics",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
 
             // Informative Footnotes
             Text(

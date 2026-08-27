@@ -40,6 +40,10 @@ class TraccarRepository(private val context: Context) {
     val cachedDevices: Flow<List<CachedDevice>> = database.deviceDao().getAllDevicesFlow()
     val cachedAlerts: Flow<List<CachedAlert>> = database.alertDao().getAllAlertsFlow()
 
+    suspend fun saveAlert(alert: CachedAlert) {
+        database.alertDao().insertAlert(alert)
+    }
+
     // Sandbox Simulation helpers
     private var isSimulating = false
     private val simulatedPositions = mutableMapOf<Long, Position>()
@@ -47,6 +51,7 @@ class TraccarRepository(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.IO)
 
     init {
+        com.example.data.api.TraccarCookieJar.init(context)
         initializeServices()
         observeWebSocketUpdates()
     }
@@ -56,37 +61,44 @@ class TraccarRepository(private val context: Context) {
     }
 
     fun initializeServices() {
-        val serverUrl = sessionManager.serverUrl
-        if (isDemo()) {
-            Log.d(TAG, "Configuring Sandbox Demo Simulation Mode...")
+        try {
+            val serverUrl = sessionManager.serverUrl
+            if (isDemo()) {
+                Log.d(TAG, "Configuring Sandbox Demo Simulation Mode...")
+                traccarApi = null
+                traccarSocket = null
+                _isSocketConnected.value = true
+                startSandboxSimulation()
+            } else {
+                stopSandboxSimulation()
+                Log.d(TAG, "Configuring REST & WebSocket API clients for: $serverUrl")
+                traccarApi = TraccarApi.create(serverUrl) {
+                    val email = sessionManager.email
+                    val password = sessionManager.password
+                    if (email.isNotBlank() && password.isNotBlank()) {
+                        Pair(email, password)
+                    } else null
+                }
+                traccarSocket = TraccarWebSocket(serverUrl) {
+                    val email = sessionManager.email
+                    val password = sessionManager.password
+                    if (email.isNotBlank() && password.isNotBlank()) {
+                        Pair(email, password)
+                    } else null
+                }
+                
+                // Connect socket if user is logged in
+                if (sessionManager.isLoggedIn) {
+                    traccarSocket?.connect()
+                }
+            }
+            observeWebSocketUpdates()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed initializing API / WebSocket services: ${e.message}", e)
             traccarApi = null
             traccarSocket = null
-            _isSocketConnected.value = true
-            startSandboxSimulation()
-        } else {
-            stopSandboxSimulation()
-            Log.d(TAG, "Configuring REST & WebSocket API clients for: $serverUrl")
-            traccarApi = TraccarApi.create(serverUrl) {
-                val email = sessionManager.email
-                val password = sessionManager.password
-                if (email.isNotBlank() && password.isNotBlank()) {
-                    Pair(email, password)
-                } else null
-            }
-            traccarSocket = TraccarWebSocket(serverUrl) {
-                val email = sessionManager.email
-                val password = sessionManager.password
-                if (email.isNotBlank() && password.isNotBlank()) {
-                    Pair(email, password)
-                } else null
-            }
-            
-            // Connect socket if user is logged in
-            if (sessionManager.isLoggedIn) {
-                traccarSocket?.connect()
-            }
+            _isSocketConnected.value = false
         }
-        observeWebSocketUpdates()
     }
 
     private var webSocketCollectJob: kotlinx.coroutines.Job? = null
@@ -114,38 +126,44 @@ class TraccarRepository(private val context: Context) {
         }
     }
 
-    private suspend fun handleSocketUpdate(update: SocketUpdate) {
+    private fun handleSocketUpdate(update: SocketUpdate) {
         update.positions?.let { positions ->
             val current = _realtimePositions.value.toMutableMap()
             positions.forEach { current[it.deviceId] = it }
             _realtimePositions.value = current
             
-            // Cache positions on the local database for offline usage
-            updateDevicesDatabase(devices = _realtimeDevices.value, lastPositions = current)
+            // Cache positions on the local database for offline usage in background thread
+            scope.launch(Dispatchers.IO) {
+                updateDevicesDatabase(devices = _realtimeDevices.value, lastPositions = current)
+            }
         }
 
         update.devices?.let { devices ->
             _realtimeDevices.value = devices
-            updateDevicesDatabase(devices = devices, lastPositions = _realtimePositions.value)
+            scope.launch(Dispatchers.IO) {
+                updateDevicesDatabase(devices = devices, lastPositions = _realtimePositions.value)
+            }
         }
 
         update.events?.let { events ->
-            events.forEach { event ->
-                val deviceName = _realtimeDevices.value.find { it.id == event.deviceId }?.name ?: "Device ${event.deviceId}"
-                val lastPos = _realtimePositions.value[event.deviceId]
-                val lat = lastPos?.latitude ?: 0.0
-                val lng = lastPos?.longitude ?: 0.0
-                
-                val alert = CachedAlert(
-                    deviceId = event.deviceId,
-                    deviceName = deviceName,
-                    type = "event",
-                    alarmType = event.type,
-                    latitude = lat,
-                    longitude = lng,
-                    message = "Alert triggered: ${event.type} for $deviceName"
-                )
-                database.alertDao().insertAlert(alert)
+            scope.launch(Dispatchers.IO) {
+                events.forEach { event ->
+                    val deviceName = _realtimeDevices.value.find { it.id == event.deviceId }?.name ?: "Device ${event.deviceId}"
+                    val lastPos = _realtimePositions.value[event.deviceId]
+                    val lat = lastPos?.latitude ?: 0.0
+                    val lng = lastPos?.longitude ?: 0.0
+                    
+                    val alert = CachedAlert(
+                        deviceId = event.deviceId,
+                        deviceName = deviceName,
+                        type = "event",
+                        alarmType = event.type,
+                        latitude = lat,
+                        longitude = lng,
+                        message = "Alert triggered: ${event.type} for $deviceName"
+                    )
+                    database.alertDao().insertAlert(alert)
+                }
             }
         }
     }
@@ -209,6 +227,7 @@ class TraccarRepository(private val context: Context) {
     fun logout() {
         traccarSocket?.disconnect()
         sessionManager.logout()
+        com.example.data.api.TraccarCookieJar.clear()
         initializeServices()
         _realtimePositions.value = emptyMap()
         _realtimeDevices.value = emptyList()
@@ -223,25 +242,78 @@ class TraccarRepository(private val context: Context) {
             delay(500)
             return simulatedDevices
         } else {
-            val api = traccarApi ?: throw IllegalStateException("API not configured")
-            val devices = try {
-                api.getDevices(all = true)
-            } catch (e: Exception) {
-                Log.w(TAG, "getDevices(all=true) failed, falling back to all=null: ${e.message}")
-                api.getDevices(all = null)
-            }
-            _realtimeDevices.value = devices
-            
-            // Pull initial positions if available
+            val api = traccarApi ?: return loadCachedDevicesFallback()
             try {
-                val positions = api.getLatestPositions()
-                val posMap = positions.filter { it.deviceId != null }.associateBy { it.deviceId!! }
-                _realtimePositions.value = posMap
-                updateDevicesDatabase(devices, posMap)
+                val devices = try {
+                    api.getDevices(all = true)
+                } catch (e: Exception) {
+                    if (e is retrofit2.HttpException && e.code() == 401) {
+                        // Re-authenticate session if cookie expired
+                        val email = sessionManager.email
+                        val password = sessionManager.password
+                        if (email.isNotBlank() && password.isNotBlank()) {
+                            try {
+                                api.login(email, password)
+                            } catch (_: Exception) {}
+                        }
+                    }
+                    Log.w(TAG, "getDevices(all=true) returned: ${e.message}, falling back to all=null")
+                    api.getDevices(all = null)
+                }
+                _realtimeDevices.value = devices
+                
+                // Pull initial positions if available
+                try {
+                    val positions = api.getLatestPositions()
+                    val posMap = positions.filter { it.deviceId != null }.associateBy { it.deviceId!! }
+                    _realtimePositions.value = posMap
+                    updateDevicesDatabase(devices, posMap)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Positions sync notice: ${e.message}")
+                }
+                return devices
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to get latest positions: ${e.message}")
+                if (e is retrofit2.HttpException && e.code() == 401) {
+                    Log.w(TAG, "Remote fetch devices (401 Unauthorized), retrieving from local cache...")
+                } else {
+                    Log.w(TAG, "Remote fetch devices (${e.message}), retrieving from local cache...")
+                }
+                return loadCachedDevicesFallback()
             }
-            return devices
+        }
+    }
+
+    private suspend fun loadCachedDevicesFallback(): List<Device> {
+        val cachedList = database.deviceDao().getAllDevicesDirect()
+        if (cachedList.isNotEmpty()) {
+            val fallbackDevices = cachedList.map { cd ->
+                Device(
+                    id = cd.id,
+                    name = cd.name,
+                    uniqueId = cd.uniqueId,
+                    status = cd.status,
+                    lastUpdate = cd.lastUpdate,
+                    category = cd.category
+                )
+            }
+            val fallbackPositions = cachedList.associate { cd ->
+                val pos = Position(
+                    id = cd.id,
+                    deviceId = cd.id,
+                    deviceTime = cd.lastUpdate,
+                    fixTime = cd.lastUpdate,
+                    latitude = cd.latitude,
+                    longitude = cd.longitude,
+                    speed = cd.speed / 1.852, // convert km/h back to knots
+                    address = cd.address
+                )
+                cd.id to pos
+            }
+            _realtimeDevices.value = fallbackDevices
+            _realtimePositions.value = fallbackPositions
+            return fallbackDevices
+        } else {
+            return _realtimeDevices.value
         }
     }
 
@@ -296,8 +368,21 @@ class TraccarRepository(private val context: Context) {
                 User(id = 103, name = "Fleet Supervisor B", email = "supervisor@saas.com", administrator = false)
             )
         } else {
-            val api = traccarApi ?: throw IllegalStateException("API not configured")
-            return api.getUsers()
+            val api = traccarApi ?: return emptyList()
+            return try {
+                api.getUsers()
+            } catch (e: retrofit2.HttpException) {
+                if (e.code() == 401 || e.code() == 403) {
+                    Log.w(TAG, "getUsers unauthorized/forbidden on server (HTTP ${e.code()}). User may have operator permissions.")
+                    emptyList()
+                } else {
+                    Log.w(TAG, "getUsers server response: HTTP ${e.code()}")
+                    emptyList()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "getUsers request failed: ${e.message}")
+                emptyList()
+            }
         }
     }
 
@@ -331,59 +416,500 @@ class TraccarRepository(private val context: Context) {
     }
 
     // HISTORICAL REPORTS & PLAYBACK
+    suspend fun getSummaryReport(
+        deviceId: Long? = null,
+        from: String,
+        to: String,
+        daily: Boolean? = null
+    ): List<ReportSummary> {
+        if (isDemo()) {
+            delay(400)
+            val devList = if (deviceId != null) {
+                simulatedDevices.filter { it.id == deviceId }
+            } else {
+                simulatedDevices
+            }
+            val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+            val fromDate = try { format.parse(from) } catch (_: Exception) { Date(System.currentTimeMillis() - 24 * 3600 * 1000L) }
+            val toDate = try { format.parse(to) } catch (_: Exception) { Date() }
+            val durationHours = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: (System.currentTimeMillis() - 24 * 3600 * 1000L))) / (1000 * 3600.0)
+            val daysMultiplier = maxOf(0.5, durationHours / 24.0)
+
+            return devList.map { dev ->
+                val baseDistanceMeters = (85000.0 + (dev.id * 24500.0)) * daysMultiplier
+                val avgSpeedKnots = 18.0 + (dev.id % 4) * 3.5
+                val maxSpeedKnots = 42.0 + (dev.id % 3) * 6.0
+                val fuelLiters = (baseDistanceMeters / 1000.0) * 0.095
+                val engineHoursMs = ((baseDistanceMeters / 1000.0) / (avgSpeedKnots * 1.852) * 3600 * 1000).toLong()
+
+                ReportSummary(
+                    deviceId = dev.id,
+                    deviceName = dev.name,
+                    maxSpeed = maxSpeedKnots,
+                    averageSpeed = avgSpeedKnots,
+                    distance = baseDistanceMeters,
+                    spentFuel = fuelLiters,
+                    engineHours = engineHoursMs
+                )
+            }
+        } else {
+            val api = traccarApi ?: return emptyList()
+            return try {
+                val results = api.getSummaryReport(deviceId = deviceId, from = from, to = to, daily = daily)
+                if (results.isNotEmpty()) {
+                    results
+                } else if (deviceId != null) {
+                    // Fallback calculate summary from route history
+                    val route = getRouteHistory(deviceId, from, to)
+                    if (route.isNotEmpty()) {
+                        val maxSpd = route.maxOfOrNull { it.speed } ?: 0.0
+                        val avgSpd = route.map { it.speed }.average()
+                        var distMeters = 0.0
+                        for (i in 0 until route.size - 1) {
+                            val p1 = route[i]
+                            val p2 = route[i + 1]
+                            val r = 6371000.0 // meters
+                            val dLat = Math.toRadians(p2.latitude - p1.latitude)
+                            val dLon = Math.toRadians(p2.longitude - p1.longitude)
+                            val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                                    Math.cos(Math.toRadians(p1.latitude)) * Math.cos(Math.toRadians(p2.latitude)) *
+                                    Math.sin(dLon / 2) * Math.sin(dLon / 2)
+                            val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+                            distMeters += (r * c)
+                        }
+                        val devName = _realtimeDevices.value.find { it.id == deviceId }?.name ?: "Device #$deviceId"
+                        listOf(
+                            ReportSummary(
+                                deviceId = deviceId,
+                                deviceName = devName,
+                                maxSpeed = maxSpd,
+                                averageSpeed = avgSpd,
+                                distance = distMeters,
+                                spentFuel = (distMeters / 1000.0) * 0.088,
+                                engineHours = (distMeters / 1000.0 / maxOf(20.0, avgSpd * 1.852) * 3600000).toLong()
+                            )
+                        )
+                    } else emptyList()
+                } else emptyList()
+            } catch (e: Exception) {
+                Log.w(TAG, "getSummaryReport remote error: ${e.message}")
+                emptyList()
+            }
+        }
+    }
+
+    suspend fun getTripsReport(
+        deviceId: Long? = null,
+        from: String,
+        to: String
+    ): List<ReportTrip> {
+        if (isDemo()) {
+            delay(500)
+            val devId = deviceId ?: 1L
+            val devName = simulatedDevices.find { it.id == devId }?.name ?: "Interstate Truck 04"
+            val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+            val fromDate = try { format.parse(from) } catch (_: Exception) { Date(System.currentTimeMillis() - 24 * 3600 * 1000L) }
+            val toDate = try { format.parse(to) } catch (_: Exception) { Date() }
+            val durationHours = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: (System.currentTimeMillis() - 24 * 3600 * 1000L))) / (1000 * 3600.0)
+            val tripCount = when {
+                durationHours > 200 -> 18 // Monthly
+                durationHours > 48 -> 8   // Weekly
+                else -> 4                 // Today
+            }
+
+            val trips = mutableListOf<ReportTrip>()
+            val sampleLocations = listOf(
+                "Central Logistics Depot, Hub A" to Pair(37.7749, -122.4194),
+                "Mission Bay Distribution Center" to Pair(37.7690, -122.3890),
+                "Oakland Freight Maritime Terminal" to Pair(37.8044, -122.2711),
+                "South Bay Enterprise Warehouse" to Pair(37.7394, -122.4494),
+                "North Waterfront Fulfillment Yard" to Pair(37.8080, -122.4120),
+                "San Jose Logistics Staging Area" to Pair(37.3382, -121.8863)
+            )
+
+            val stepTime = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: 0L)) / tripCount
+            for (i in 0 until tripCount) {
+                val startLoc = sampleLocations[i % sampleLocations.size]
+                val endLoc = sampleLocations[(i + 1) % sampleLocations.size]
+                val startTimeMillis = (fromDate?.time ?: System.currentTimeMillis()) + (i * stepTime) + (15 * 60 * 1000L)
+                val durationMs = (25 + (i * 7) % 45) * 60 * 1000L
+                val endTimeMillis = startTimeMillis + durationMs
+                val tripDistMeters = (14000.0 + ((i * 8500) % 32000))
+                val avgSpd = (32.0 + (i % 5) * 4.0) / 1.852
+                val maxSpd = (55.0 + (i % 4) * 8.0) / 1.852
+
+                trips.add(
+                    ReportTrip(
+                        deviceId = devId,
+                        deviceName = devName,
+                        distance = tripDistMeters,
+                        averageSpeed = avgSpd,
+                        maxSpeed = maxSpd,
+                        spentFuel = (tripDistMeters / 1000.0) * 0.092,
+                        startPositionId = (1000 + i * 10).toLong(),
+                        endPositionId = (1000 + i * 10 + 9).toLong(),
+                        startTime = format.format(Date(startTimeMillis)),
+                        startAddress = startLoc.first,
+                        startLat = startLoc.second.first,
+                        startLon = startLoc.second.second,
+                        endTime = format.format(Date(endTimeMillis)),
+                        endAddress = endLoc.first,
+                        endLat = endLoc.second.first,
+                        endLon = endLoc.second.second,
+                        duration = durationMs,
+                        driverUniqueId = "DRV-0${(i % 3) + 1}",
+                        driverName = when (i % 3) {
+                            0 -> "Abebe Bekele"
+                            1 -> "Dawit Haile"
+                            else -> "Michael Tadesse"
+                        }
+                    )
+                )
+            }
+            return trips
+        } else {
+            val api = traccarApi ?: return emptyList()
+            return try {
+                api.getTripsReport(deviceId = deviceId, from = from, to = to)
+            } catch (e: Exception) {
+                Log.w(TAG, "getTripsReport remote failed: ${e.message}")
+                emptyList()
+            }
+        }
+    }
+
+    suspend fun getStopsReport(
+        deviceId: Long? = null,
+        from: String,
+        to: String
+    ): List<ReportStop> {
+        if (isDemo()) {
+            delay(400)
+            val devId = deviceId ?: 1L
+            val devName = simulatedDevices.find { it.id == devId }?.name ?: "Interstate Truck 04"
+            val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+            val fromDate = try { format.parse(from) } catch (_: Exception) { Date(System.currentTimeMillis() - 24 * 3600 * 1000L) }
+            val toDate = try { format.parse(to) } catch (_: Exception) { Date() }
+            val durationHours = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: (System.currentTimeMillis() - 24 * 3600 * 1000L))) / (1000 * 3600.0)
+            val stopCount = when {
+                durationHours > 200 -> 22 // Monthly
+                durationHours > 48 -> 10  // Weekly
+                else -> 5                 // Today
+            }
+
+            val stops = mutableListOf<ReportStop>()
+            val stopLocations = listOf(
+                "Central Logistics Depot Bay 3" to Pair(37.7749, -122.4194),
+                "Customer Fulfillment Loading Zone" to Pair(37.7690, -122.3890),
+                "Highway Service Plaza Fueling Station" to Pair(37.8044, -122.2711),
+                "Fleet Maintenance Yard" to Pair(37.7394, -122.4494),
+                "Retail Distribution Staging Terminal" to Pair(37.8080, -122.4120)
+            )
+
+            val stepTime = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: 0L)) / stopCount
+            for (i in 0 until stopCount) {
+                val loc = stopLocations[i % stopLocations.size]
+                val startTimeMillis = (fromDate?.time ?: System.currentTimeMillis()) + (i * stepTime)
+                val durationMs = (15 + (i * 12) % 60) * 60 * 1000L
+                val endTimeMillis = startTimeMillis + durationMs
+
+                stops.add(
+                    ReportStop(
+                        deviceId = devId,
+                        deviceName = devName,
+                        duration = durationMs,
+                        startTime = format.format(Date(startTimeMillis)),
+                        endTime = format.format(Date(endTimeMillis)),
+                        positionId = (2000 + i).toLong(),
+                        latitude = loc.second.first,
+                        longitude = loc.second.second,
+                        address = loc.first,
+                        spentFuel = 0.4 + (i % 3) * 0.2,
+                        engineHours = (durationMs * 0.2).toLong()
+                    )
+                )
+            }
+            return stops
+        } else {
+            val api = traccarApi ?: return emptyList()
+            return try {
+                api.getStopsReport(deviceId = deviceId, from = from, to = to)
+            } catch (e: Exception) {
+                Log.w(TAG, "getStopsReport remote failed: ${e.message}")
+                emptyList()
+            }
+        }
+    }
+
+    suspend fun getEventsReport(
+        deviceId: Long? = null,
+        from: String,
+        to: String,
+        type: String? = null
+    ): List<Event> {
+        if (isDemo()) {
+            delay(300)
+            val devId = deviceId ?: 1L
+            val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+            val toTime = System.currentTimeMillis()
+            return listOf(
+                Event(1, "deviceMoving", format.format(Date(toTime - 30 * 60 * 1000L)), devId, 101, 0, mapOf("speed" to 58.2)),
+                Event(2, "geofenceEnter", format.format(Date(toTime - 90 * 60 * 1000L)), devId, 102, 101, mapOf("geofence" to "SF Logistics & Central Depot")),
+                Event(3, "alarm", format.format(Date(toTime - 180 * 60 * 1000L)), devId, 103, 0, mapOf("alarm" to "overspeed", "speed" to 88.4)),
+                Event(4, "deviceStopped", format.format(Date(toTime - 240 * 60 * 1000L)), devId, 104, 0, mapOf("duration" to 1800000)),
+                Event(5, "geofenceExit", format.format(Date(toTime - 360 * 60 * 1000L)), devId, 105, 102, mapOf("geofence" to "Mission Bay Transit Corridor"))
+            )
+        } else {
+            val api = traccarApi ?: return emptyList()
+            return try {
+                api.getEventsReport(deviceId = deviceId, from = from, to = to, type = type)
+            } catch (e: Exception) {
+                Log.w(TAG, "getEventsReport error: ${e.message}")
+                emptyList()
+            }
+        }
+    }
+
     suspend fun getRouteHistory(deviceId: Long, from: String, to: String): List<Position> {
         if (isDemo()) {
-            // Generate some beautiful mock route coordinates for historical playback
-            delay(800)
+            // Generate rich mock route coordinates for historical playback & reports
+            delay(500)
             val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
             val list = mutableListOf<Position>()
-            // Route from San Francisco towards Oakland or Seattle starting point
             val startLat = 37.7749
             val startLng = -122.4194
-            val count = 25
+            val fromDate = try { format.parse(from) } catch (_: Exception) { Date(System.currentTimeMillis() - 24 * 3600 * 1000L) }
+            val toDate = try { format.parse(to) } catch (_: Exception) { Date() }
+            val durationHours = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: (System.currentTimeMillis() - 24 * 3600 * 1000L))) / (1000 * 3600.0)
+            val count = when {
+                durationHours > 200 -> 75 // Monthly
+                durationHours > 48 -> 45  // Weekly
+                else -> 28               // Today
+            }
+            val stepMs = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: 0L)) / count
             
             for (i in 0 until count) {
-                // progressive motion
-                val lat = startLat + (i * 0.0035) * if (deviceId % 2 == 0L) 1 else -1
-                val lng = startLng + (i * 0.0055)
-                val date = Date(format.parse(from).time + (i * 15 * 60 * 1000L)) // every 15 min
+                val lat = startLat + (i * 0.0028) * if (deviceId % 2 == 0L) 1 else -1
+                val lng = startLng + (i * 0.0042)
+                val date = Date((fromDate?.time ?: System.currentTimeMillis()) + (i * stepMs))
                 val timeString = format.format(date)
+                val currentSpdKnots = if (i % 6 == 0) 0.0 else (28.0 + (i % 5) * 4.5)
                 
                 list.add(
                     Position(
-                        id = i.toLong(),
+                        id = (10000 + i).toLong(),
                         deviceId = deviceId,
-                        protocol = "mock_gps",
+                        protocol = "osmand",
                         deviceTime = timeString,
                         fixTime = timeString,
                         latitude = lat,
                         longitude = lng,
                         altitude = 45.0,
-                        speed = 35.0 + (i % 5) * 5.0,
-                        course = 45.0 + (i * 3) % 360,
-                        address = "Highway 101, Mile ${i + 1}",
-                        accuracy = 5.0,
-                        attributes = mapOf("ign" to true, "voltage" to 12.8)
+                        speed = currentSpdKnots,
+                        course = (45.0 + (i * 12)) % 360,
+                        address = "Highway 101 corridor, Marker ${i + 1}",
+                        accuracy = 4.0,
+                        attributes = mapOf(
+                            "ign" to (currentSpdKnots > 0),
+                            "voltage" to 13.2,
+                            "distance" to (i * 1850.0),
+                            "totalDistance" to (i * 1850.0)
+                        )
                     )
                 )
             }
             return list
         } else {
-            val api = traccarApi ?: throw IllegalStateException("API not configured")
-            return api.getRouteReport(deviceId, from, to)
+            val api = traccarApi ?: return emptyList()
+            return try {
+                api.getRouteReport(deviceId, from, to)
+            } catch (e: retrofit2.HttpException) {
+                if (e.code() == 401 || e.code() == 403 || e.code() == 404) {
+                    try {
+                        api.getPositions(deviceId, from, to)
+                    } catch (e2: Exception) {
+                        Log.w(TAG, "getPositions fallback failed: ${e2.message}")
+                        emptyList()
+                    }
+                } else {
+                    Log.w(TAG, "getRouteReport failed with code ${e.code()}: ${e.message}")
+                    emptyList()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "getRouteHistory error: ${e.message}")
+                try {
+                    api.getPositions(deviceId, from, to)
+                } catch (e2: Exception) {
+                    emptyList()
+                }
+            }
         }
     }
+
+    suspend fun getServer(): Server? {
+        if (isDemo()) {
+            return Server(
+                id = 1,
+                registration = false,
+                readonly = false,
+                deviceReadonly = false,
+                map = "custom",
+                latitude = 37.7749,
+                longitude = -122.4194,
+                zoom = 12,
+                version = "6.5"
+            )
+        } else {
+            val api = traccarApi ?: return null
+            return try {
+                api.getServer()
+            } catch (e: Exception) {
+                Log.w(TAG, "getServer error: ${e.message}")
+                null
+            }
+        }
+    }
+
+    suspend fun getDrivers(): List<Driver> {
+        if (isDemo()) {
+            return listOf(
+                Driver(id = 1, name = "Abebe Bekele", uniqueId = "DRV-01"),
+                Driver(id = 2, name = "Dawit Haile", uniqueId = "DRV-02"),
+                Driver(id = 3, name = "Michael Tadesse", uniqueId = "DRV-03")
+            )
+        } else {
+            val api = traccarApi ?: return emptyList()
+            return try {
+                api.getDrivers()
+            } catch (e: Exception) {
+                Log.w(TAG, "getDrivers error: ${e.message}")
+                emptyList()
+            }
+        }
+    }
+
+    suspend fun getGroups(): List<Group> {
+        if (isDemo()) {
+            return listOf(
+                Group(id = 1, name = "Heavy Haul Division"),
+                Group(id = 2, name = "Urban Express Couriers")
+            )
+        } else {
+            val api = traccarApi ?: return emptyList()
+            return try {
+                api.getGroups()
+            } catch (e: Exception) {
+                Log.w(TAG, "getGroups error: ${e.message}")
+                emptyList()
+            }
+        }
+    }
+
 
     // GEOFENCE NETWORK MANAGERS OR SANDBOX FALLBACKS
     private val simulatedGeofences = mutableListOf<TraccarGeofence>()
 
-    suspend fun getGeofences(): List<TraccarGeofence> {
+    private fun initPredefinedGeofences() {
+        if (simulatedGeofences.isNotEmpty()) return
+        simulatedGeofences.addAll(
+            listOf(
+                TraccarGeofence(
+                    id = 101,
+                    name = "SF Logistics & Central Depot",
+                    description = "Primary freight distribution and staging hub for interstate heavy trucks.",
+                    area = "POLYGON ((37.7810 -122.4260, 37.7810 -122.4110, 37.7670 -122.4110, 37.7670 -122.4260, 37.7810 -122.4260))",
+                    attributes = mapOf("deviceId" to 1L, "color" to "#3B82F6", "speedLimit" to 50)
+                ),
+                TraccarGeofence(
+                    id = 102,
+                    name = "Mission Bay Transit Corridor",
+                    description = "Designated high-capacity transit corridor connecting to central docks.",
+                    area = "POLYGON ((37.7790 -122.4020, 37.7790 -122.3860, 37.7640 -122.3860, 37.7640 -122.4020, 37.7790 -122.4020))",
+                    attributes = mapOf("deviceId" to 1L, "color" to "#60A5FA", "speedLimit" to 65)
+                ),
+                TraccarGeofence(
+                    id = 201,
+                    name = "Commercial Delivery Hub Alpha",
+                    description = "High-density retail delivery and package fulfillment operating perimeter.",
+                    area = "POLYGON ((37.7670 -122.4440, 37.7670 -122.4270, 37.7510 -122.4270, 37.7510 -122.4440, 37.7670 -122.4440))",
+                    attributes = mapOf("deviceId" to 2L, "color" to "#10B981", "speedLimit" to 40)
+                ),
+                TraccarGeofence(
+                    id = 202,
+                    name = "Twin Peaks Transit Zone",
+                    description = "Monitored secondary hill distribution zone for local vans.",
+                    area = "POLYGON ((37.7610 -122.4560, 37.7610 -122.4390, 37.7440 -122.4390, 37.7440 -122.4560, 37.7610 -122.4560))",
+                    attributes = mapOf("deviceId" to 2L, "color" to "#34D399", "speedLimit" to 45)
+                ),
+                TraccarGeofence(
+                    id = 301,
+                    name = "Embarcadero Container Terminal",
+                    description = "Port maritime container staging and asset yard perimeter.",
+                    area = "POLYGON ((37.8110 -122.4160, 37.8110 -122.3940, 37.7940 -122.3940, 37.7940 -122.4160, 37.8110 -122.4160))",
+                    attributes = mapOf("deviceId" to 3L, "color" to "#8B5CF6", "speedLimit" to 30)
+                ),
+                TraccarGeofence(
+                    id = 302,
+                    name = "Fisherman's Wharf Port Perimeter",
+                    description = "Secure northern waterfront asset holding zone.",
+                    area = "POLYGON ((37.8130 -122.4230, 37.8130 -122.4070, 37.7990 -122.4070, 37.7990 -122.4230, 37.8130 -122.4230))",
+                    attributes = mapOf("deviceId" to 3L, "color" to "#A78BFA", "speedLimit" to 25)
+                ),
+                TraccarGeofence(
+                    id = 401,
+                    name = "Ocean Ave Commercial District",
+                    description = "Client visiting and enterprise sales representative zone.",
+                    area = "POLYGON ((37.7470 -122.4590, 37.7470 -122.4390, 37.7310 -122.4390, 37.7310 -122.4590, 37.7470 -122.4590))",
+                    attributes = mapOf("deviceId" to 4L, "color" to "#F59E0B", "speedLimit" to 55)
+                ),
+                TraccarGeofence(
+                    id = 402,
+                    name = "Balboa Express Gateway",
+                    description = "Southern freeway corridor entrance boundary.",
+                    area = "POLYGON ((37.7390 -122.4510, 37.7390 -122.4340, 37.7210 -122.4340, 37.7210 -122.4510, 37.7390 -122.4510))",
+                    attributes = mapOf("deviceId" to 4L, "color" to "#FBBF24", "speedLimit" to 65)
+                ),
+                TraccarGeofence(
+                    id = 501,
+                    name = "Metropolitan Operating Boundary",
+                    description = "Universal fleet operational perimeter encompassing the San Francisco metro area.",
+                    area = "POLYGON ((37.8200 -122.4650, 37.8200 -122.3780, 37.7100 -122.3780, 37.7100 -122.4650, 37.8200 -122.4650))",
+                    attributes = mapOf("color" to "#06B6D4", "speedLimit" to 80)
+                )
+            )
+        )
+    }
+
+    suspend fun getGeofences(deviceId: Long? = null): List<TraccarGeofence> {
+        initPredefinedGeofences()
         if (isDemo()) {
-            delay(300)
-            return simulatedGeofences
+            delay(150)
+            return if (deviceId != null) {
+                simulatedGeofences.filter { gf ->
+                    val targetDevId = (gf.attributes["deviceId"] as? Number)?.toLong()
+                    targetDevId == null || targetDevId == deviceId
+                }
+            } else {
+                simulatedGeofences.toList()
+            }
         } else {
             val api = traccarApi ?: throw IllegalStateException("API not configured")
-            return api.getGeofences()
+            return try {
+                val serverList = api.getGeofences(deviceId = deviceId)
+                if (serverList.isNotEmpty()) {
+                    serverList
+                } else if (deviceId != null) {
+                    // Fallback to predefined for demo/sandbox devices if server has none
+                    simulatedGeofences.filter { gf ->
+                        val targetDevId = (gf.attributes["deviceId"] as? Number)?.toLong()
+                        targetDevId == null || targetDevId == deviceId
+                    }
+                } else {
+                    simulatedGeofences.toList()
+                }
+            } catch (e: Exception) {
+                simulatedGeofences.toList()
+            }
         }
     }
 
@@ -450,7 +976,8 @@ class TraccarRepository(private val context: Context) {
         scope.launch {
             var counter = 0
             while (isSimulating) {
-                delay(3000) // Update map locations every 3 seconds
+                val intervalSeconds = sessionManager.positionUpdateInterval
+                delay(intervalSeconds * 1000L) // Dynamically configured position update interval
 
                 // Update active vehicles positions
                 listOf(1L, 2L, 4L).forEach { devId ->

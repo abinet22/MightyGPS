@@ -78,3 +78,68 @@ class EventAdapter {
         return Event(id, type, eventTime, deviceId, positionId, geofenceId, attributes)
     }
 }
+
+class ReportSummaryAdapter {
+    @FromJson
+    fun fromJson(map: Map<String, Any?>): com.example.data.model.ReportSummary {
+        val deviceId = (map["deviceId"] as? Number)?.toLong() ?: 0L
+        val deviceName = map["deviceName"] as? String ?: ""
+        val maxSpeed = (map["maxSpeed"] as? Number)?.toDouble() ?: 0.0
+        val averageSpeed = (map["averageSpeed"] as? Number)?.toDouble() ?: 0.0
+        val distance = (map["distance"] as? Number)?.toDouble() ?: 0.0
+        val spentFuel = (map["spentFuel"] as? Number)?.toDouble() ?: 0.0
+        val engineHours = (map["engineHours"] as? Number)?.toLong() ?: 0L
+        return com.example.data.model.ReportSummary(deviceId, deviceName, maxSpeed, averageSpeed, distance, spentFuel, engineHours)
+    }
+}
+
+class ReportTripAdapter {
+    @FromJson
+    fun fromJson(map: Map<String, Any?>): com.example.data.model.ReportTrip {
+        val deviceId = (map["deviceId"] as? Number)?.toLong() ?: 0L
+        val deviceName = map["deviceName"] as? String ?: ""
+        val distance = (map["distance"] as? Number)?.toDouble() ?: 0.0
+        val averageSpeed = (map["averageSpeed"] as? Number)?.toDouble() ?: 0.0
+        val maxSpeed = (map["maxSpeed"] as? Number)?.toDouble() ?: 0.0
+        val spentFuel = (map["spentFuel"] as? Number)?.toDouble() ?: 0.0
+        val startPositionId = (map["startPositionId"] as? Number)?.toLong() ?: 0L
+        val endPositionId = (map["endPositionId"] as? Number)?.toLong() ?: 0L
+        val startTime = map["startTime"] as? String
+        val startAddress = map["startAddress"] as? String
+        val startLat = (map["startLat"] as? Number)?.toDouble() ?: 0.0
+        val startLon = (map["startLon"] as? Number)?.toDouble() ?: 0.0
+        val endTime = map["endTime"] as? String
+        val endAddress = map["endAddress"] as? String
+        val endLat = (map["endLat"] as? Number)?.toDouble() ?: 0.0
+        val endLon = (map["endLon"] as? Number)?.toDouble() ?: 0.0
+        val duration = (map["duration"] as? Number)?.toLong() ?: 0L
+        val driverUniqueId = map["driverUniqueId"] as? String
+        val driverName = map["driverName"] as? String
+        return com.example.data.model.ReportTrip(
+            deviceId, deviceName, distance, averageSpeed, maxSpeed, spentFuel,
+            startPositionId, endPositionId, startTime, startAddress, startLat, startLon,
+            endTime, endAddress, endLat, endLon, duration, driverUniqueId, driverName
+        )
+    }
+}
+
+class ReportStopAdapter {
+    @FromJson
+    fun fromJson(map: Map<String, Any?>): com.example.data.model.ReportStop {
+        val deviceId = (map["deviceId"] as? Number)?.toLong() ?: 0L
+        val deviceName = map["deviceName"] as? String ?: ""
+        val duration = (map["duration"] as? Number)?.toLong() ?: 0L
+        val startTime = map["startTime"] as? String
+        val endTime = map["endTime"] as? String
+        val positionId = (map["positionId"] as? Number)?.toLong() ?: 0L
+        val latitude = (map["latitude"] as? Number)?.toDouble() ?: 0.0
+        val longitude = (map["longitude"] as? Number)?.toDouble() ?: 0.0
+        val address = map["address"] as? String
+        val spentFuel = (map["spentFuel"] as? Number)?.toDouble() ?: 0.0
+        val engineHours = (map["engineHours"] as? Number)?.toLong() ?: 0L
+        return com.example.data.model.ReportStop(
+            deviceId, deviceName, duration, startTime, endTime, positionId, latitude, longitude, address, spentFuel, engineHours
+        )
+    }
+}
+

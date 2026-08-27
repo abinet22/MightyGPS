@@ -13,6 +13,7 @@ import com.example.data.repo.TraccarRepository
 import com.example.ui.map.MapMarker
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -27,6 +28,7 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
     private val TAG = "TraccarViewModel"
     val repository = TraccarRepository(application)
     val sessionManager = repository.sessionManager
+    val abortController = AbortController()
 
     // Reactive State holds
     private val _authUIState = MutableStateFlow<AuthUIState>(AuthUIState.Idle)
@@ -43,6 +45,8 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
 
     private val _historyLoading = MutableStateFlow(false)
     val historyLoading: StateFlow<Boolean> = _historyLoading.asStateFlow()
+
+    private var historyLoadingJob: kotlinx.coroutines.Job? = null
 
     private val _feedbackMessage = MutableStateFlow<String?>(null)
     val feedbackMessage: StateFlow<String?> = _feedbackMessage.asStateFlow()
@@ -121,6 +125,24 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
     private val _customIconUri = MutableStateFlow(sessionManager.customIconUri)
     val customIconUri: StateFlow<String?> = _customIconUri.asStateFlow()
 
+    private val _positionUpdateInterval = MutableStateFlow(sessionManager.positionUpdateInterval)
+    val positionUpdateInterval: StateFlow<Int> = _positionUpdateInterval.asStateFlow()
+
+    private val _colorMoving = MutableStateFlow(sessionManager.colorMoving)
+    val colorMoving: StateFlow<String> = _colorMoving.asStateFlow()
+
+    private val _colorIdle = MutableStateFlow(sessionManager.colorIdle)
+    val colorIdle: StateFlow<String> = _colorIdle.asStateFlow()
+
+    private val _colorOffline = MutableStateFlow(sessionManager.colorOffline)
+    val colorOffline: StateFlow<String> = _colorOffline.asStateFlow()
+
+    private val _markerTriggerMode = MutableStateFlow(sessionManager.markerTriggerMode)
+    val markerTriggerMode: StateFlow<String> = _markerTriggerMode.asStateFlow()
+
+    private val _infoCardFields = MutableStateFlow(sessionManager.infoCardFields)
+    val infoCardFields: StateFlow<String> = _infoCardFields.asStateFlow()
+
     // Data holder for custom local geofences
     data class CustomGeofence(
         val id: String,
@@ -131,11 +153,26 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
         val isActive: Boolean = true,
         val areaWkt: String = "",
         val type: String = "circle", // "circle" or "polygon"
-        val points: List<Pair<Double, Double>> = emptyList()
+        val points: List<Pair<Double, Double>> = emptyList(),
+        val triggerOnEnter: Boolean = true,
+        val triggerOnExit: Boolean = true,
+        val targetDeviceId: Long? = null,
+        val colorHex: String = "#3B82F6",
+        val description: String = "",
+        val speedLimit: Int? = null
     )
 
     private val _geofences = MutableStateFlow<List<CustomGeofence>>(emptyList())
     val geofences: StateFlow<List<CustomGeofence>> = _geofences.asStateFlow()
+
+    private val _isGeofenceLayerVisible = MutableStateFlow(true)
+    val isGeofenceLayerVisible: StateFlow<Boolean> = _isGeofenceLayerVisible.asStateFlow()
+
+    private val _selectedGeofence = MutableStateFlow<CustomGeofence?>(null)
+    val selectedGeofence: StateFlow<CustomGeofence?> = _selectedGeofence.asStateFlow()
+
+    // Map of "$deviceId:$geofenceId" -> Boolean (isInside) for transition tracking
+    private val deviceGeofenceStates = mutableMapOf<String, Boolean>()
 
     // Data holder for sent telematics commands
     data class DispatchedCommand(
@@ -176,6 +213,36 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
         _customIconUri.value = uri
     }
 
+    fun setPositionUpdateInterval(seconds: Int) {
+        sessionManager.positionUpdateInterval = seconds
+        _positionUpdateInterval.value = seconds
+    }
+
+    fun setColorMoving(hex: String) {
+        sessionManager.colorMoving = hex
+        _colorMoving.value = hex
+    }
+
+    fun setColorIdle(hex: String) {
+        sessionManager.colorIdle = hex
+        _colorIdle.value = hex
+    }
+
+    fun setColorOffline(hex: String) {
+        sessionManager.colorOffline = hex
+        _colorOffline.value = hex
+    }
+
+    fun setMarkerTriggerMode(mode: String) {
+        sessionManager.markerTriggerMode = mode
+        _markerTriggerMode.value = mode
+    }
+
+    fun setInfoCardFields(fields: String) {
+        sessionManager.infoCardFields = fields
+        _infoCardFields.value = fields
+    }
+
     fun addGeofence(
         name: String, 
         lat: Double, 
@@ -183,7 +250,9 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
         radius: Double, 
         type: String = "circle", 
         points: List<Pair<Double, Double>> = emptyList(), 
-        deviceId: Long? = null
+        deviceId: Long? = null,
+        triggerOnEnter: Boolean = true,
+        triggerOnExit: Boolean = true
     ) {
         viewModelScope.launch {
             try {
@@ -204,7 +273,7 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 val traccarGf = com.example.data.model.TraccarGeofence(
                     id = 0,
                     name = name,
-                    description = "Custom Drawn Mapbox Bound",
+                    description = "Custom Drawn Google Maps Bound",
                     area = areaWkt
                 )
 
@@ -219,7 +288,10 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                     isActive = true,
                     areaWkt = areaWkt,
                     type = type,
-                    points = points
+                    points = points,
+                    triggerOnEnter = triggerOnEnter,
+                    triggerOnExit = triggerOnExit,
+                    targetDeviceId = deviceId
                 )
 
                 if (deviceId != null && deviceId > 0) {
@@ -254,10 +326,23 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                     isActive = true,
                     areaWkt = fallbackWkt,
                     type = type,
-                    points = points
+                    points = points,
+                    triggerOnEnter = triggerOnEnter,
+                    triggerOnExit = triggerOnExit,
+                    targetDeviceId = deviceId
                 )
                 _geofences.value = _geofences.value + newGf
             }
+        }
+    }
+
+    fun toggleGeofenceActive(id: String) {
+        _geofences.value = _geofences.value.map { gf ->
+            if (gf.id == id) {
+                val newState = !gf.isActive
+                _feedbackMessage.value = "Geofence '${gf.name}' ${if (newState) "Activated" else "Deactivated"}"
+                gf.copy(isActive = newState)
+            } else gf
         }
     }
 
@@ -484,6 +569,7 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
     }
 
     init {
+        startGeofenceMonitoring()
         if (sessionManager.isLoggedIn) {
             _authUIState.value = AuthUIState.Success(
                 User(
@@ -507,6 +593,104 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
 
     fun selectDevice(deviceId: Long?) {
         _selectedDeviceId.value = deviceId
+        abortController.abort("playback_history")
+        fetchGeofencesForDevice(deviceId)
+    }
+
+    fun toggleGeofenceLayer(visible: Boolean? = null) {
+        _isGeofenceLayerVisible.value = visible ?: !_isGeofenceLayerVisible.value
+    }
+
+    fun selectGeofence(gf: CustomGeofence?) {
+        _selectedGeofence.value = gf
+    }
+
+    fun fetchGeofencesForDevice(deviceId: Long?) {
+        val job = viewModelScope.launch {
+            try {
+                val serverGfs = repository.getGeofences(deviceId)
+                if (serverGfs.isNotEmpty()) {
+                    val mapped = serverGfs.map { sgf ->
+                        parseTraccarGeofence(sgf)
+                    }
+                    // If deviceId is provided, merge with any other existing geofences or update
+                    val nonMatching = _geofences.value.filter { gf ->
+                        val gfDevId = gf.targetDeviceId
+                        gfDevId != null && gfDevId != deviceId
+                    }
+                    _geofences.value = (mapped + nonMatching).distinctBy { it.id }
+                }
+            } catch (e: Exception) {
+                Log.e("TraccarViewModel", "Failed to fetch geofences for device $deviceId", e)
+            }
+        }
+        abortController.register("device_geofences_${deviceId ?: "all"}", job)
+    }
+
+    private fun parseTraccarGeofence(sgf: com.example.data.model.TraccarGeofence): CustomGeofence {
+        var lat = 8.7832
+        var lng = 38.7405
+        var rad = 1000.0
+        var type = "circle"
+        var points = emptyList<Pair<Double, Double>>()
+
+        try {
+            if (sgf.area.startsWith("CIRCLE", ignoreCase = true)) {
+                val clean = sgf.area.substringAfter("(").substringBefore(")")
+                val coordPart = clean.substringBefore(",")
+                val radPart = clean.substringAfter(",")
+                val coords = coordPart.trim().split(Regex("\\s+"))
+                lat = coords[0].toDoubleOrNull() ?: 8.7832
+                lng = coords[1].toDoubleOrNull() ?: 38.7405
+                rad = radPart.trim().toDoubleOrNull() ?: 1000.0
+            } else if (sgf.area.startsWith("POLYGON", ignoreCase = true)) {
+                type = "polygon"
+                val clean = sgf.area.substringAfter("((").substringBefore("))")
+                val pairs = clean.split(",")
+                val pts = pairs.mapNotNull { p ->
+                    val parts = p.trim().split(Regex("\\s+"))
+                    if (parts.size >= 2) {
+                        val v1 = parts[0].toDoubleOrNull() ?: 0.0
+                        val v2 = parts[1].toDoubleOrNull() ?: 0.0
+                        // Sanity check coordinates for (lat, lng) vs (lng, lat)
+                        if (Math.abs(v1) <= 90.0 && Math.abs(v2) > 90.0) {
+                            Pair(v1, v2)
+                        } else if (Math.abs(v2) <= 90.0 && Math.abs(v1) > 90.0) {
+                            Pair(v2, v1)
+                        } else {
+                            Pair(v1, v2)
+                        }
+                    } else null
+                }
+                points = pts
+                if (pts.isNotEmpty()) {
+                    lat = pts.map { it.first }.average()
+                    lng = pts.map { it.second }.average()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("TraccarViewModel", "Failed to parse geofence area: ${sgf.area}", e)
+        }
+
+        val targetDevId = (sgf.attributes["deviceId"] as? Number)?.toLong()
+        val colorHex = (sgf.attributes["color"] as? String) ?: "#3B82F6"
+        val speedLimit = (sgf.attributes["speedLimit"] as? Number)?.toInt()
+
+        return CustomGeofence(
+            id = sgf.id.toString(),
+            name = sgf.name,
+            latitude = lat,
+            longitude = lng,
+            radiusMeters = rad,
+            isActive = true,
+            areaWkt = sgf.area,
+            type = type,
+            points = points,
+            targetDeviceId = targetDevId,
+            colorHex = colorHex,
+            description = sgf.description ?: "",
+            speedLimit = speedLimit
+        )
     }
 
     fun submitLogin(server: String, email: String, pass: String) {
@@ -552,96 +736,57 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun fetchGeofencesFromServer() {
-        viewModelScope.launch {
+        val job = viewModelScope.launch {
             try {
                 val serverGfs = wrapSync("Geofences") {
                     repository.getGeofences()
                 }
                 if (serverGfs.isNotEmpty()) {
                     val mapped = serverGfs.map { sgf ->
-                        var lat = 9.0192
-                        var lng = 38.7525
-                        var rad = 1000.0
-                        var type = "circle"
-                        var points = emptyList<Pair<Double, Double>>()
-
-                        try {
-                            if (sgf.area.startsWith("CIRCLE", ignoreCase = true)) {
-                                val clean = sgf.area.substringAfter("(").substringBefore(")")
-                                val coordPart = clean.substringBefore(",")
-                                val radPart = clean.substringAfter(",")
-                                val coords = coordPart.trim().split(" ")
-                                lat = coords[0].toDouble()
-                                lng = coords[1].toDouble()
-                                rad = radPart.trim().toDouble()
-                            } else if (sgf.area.startsWith("POLYGON", ignoreCase = true)) {
-                                type = "polygon"
-                                val clean = sgf.area.substringAfter("((").substringBefore("))")
-                                val pairs = clean.split(",")
-                                val pts = pairs.map { p ->
-                                    val parts = p.trim().split(" ")
-                                    val pointLng = parts[0].toDouble()
-                                    val pointLat = parts[1].toDouble()
-                                    Pair(pointLat, pointLng)
-                                }
-                                points = pts
-                                if (pts.isNotEmpty()) {
-                                    lat = pts.map { it.first }.average()
-                                    lng = pts.map { it.second }.average()
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.e("TraccarViewModel", "Failed to parse geofence area: ${sgf.area}", e)
-                        }
-
-                        CustomGeofence(
-                            id = sgf.id.toString(),
-                            name = sgf.name,
-                            latitude = lat,
-                            longitude = lng,
-                            radiusMeters = rad,
-                            isActive = true,
-                            areaWkt = sgf.area,
-                            type = type,
-                            points = points
-                        )
+                        parseTraccarGeofence(sgf)
                     }
                     _geofences.value = mapped
                 }
             } catch (e: Exception) {
-                Log.e("TraccarViewModel", "Failed to fetch geofences standard flow", e)
+                Log.w("TraccarViewModel", "Geofences sync notice: ${e.message}")
             }
         }
+        abortController.register("geofences", job)
     }
 
     fun fetchDevices() {
-        viewModelScope.launch {
+        val job = viewModelScope.launch {
             try {
                 val list = wrapSync("Devices") {
                     repository.getDevices()
                 }
                 _devices.value = list
+                if (_selectedDeviceId.value == null && list.isNotEmpty()) {
+                    _selectedDeviceId.value = list.first().id
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "Fetch devices failed: ${e.message}")
+                Log.w(TAG, "Fetch devices notice: ${e.message}")
             }
         }
+        abortController.register("devices", job)
     }
 
     fun fetchTenantUsers() {
-        viewModelScope.launch {
+        val job = viewModelScope.launch {
             try {
                 val list = wrapSync("Tenant Roster") {
                     repository.getUsers()
                 }
                 _usersList.value = list
             } catch (e: Exception) {
-                Log.e(TAG, "Fetch tenant users failed: ${e.message}")
+                Log.w(TAG, "Fetch tenant users notice: ${e.message}")
             }
         }
+        abortController.register("tenant_users", job)
     }
 
     // CRUD: Manage Devices
-    fun addNewDevice(name: String, uniqueId: String, category: String) {
+    fun addNewDevice(name: String, uniqueId: String, category: String, plateOrModel: String? = null) {
         viewModelScope.launch {
             try {
                 val stub = Device(
@@ -650,6 +795,8 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                     uniqueId = uniqueId,
                     status = "offline",
                     category = category.lowercase(),
+                    model = plateOrModel?.takeIf { it.isNotBlank() },
+                    attributes = if (!plateOrModel.isNullOrBlank()) mapOf("plate" to plateOrModel, "customName" to name) else mapOf("customName" to name),
                     lastUpdate = null
                 )
                 wrapSync("Register Device") {
@@ -717,7 +864,8 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
 
     // Playback retrieval
     fun loadPlaybackHistoryRange(deviceId: Long, fromTime: java.util.Date, toTime: java.util.Date) {
-        viewModelScope.launch {
+        historyLoadingJob?.cancel()
+        val job = viewModelScope.launch {
             _historyLoading.value = true
             _routeHistory.value = emptyList()
             try {
@@ -727,23 +875,33 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 val trail = wrapSync("Route history") {
                     repository.getRouteHistory(deviceId, fromStr, toStr)
                 }
-                _routeHistory.value = trail
-                if (trail.isEmpty()) {
-                    _feedbackMessage.value = "No historical logs found for the selected time range"
-                } else {
-                    _feedbackMessage.value = "Loaded ${trail.size} breadcrumbs for historical playback"
+                // Ensure we are still active after async call
+                if (this.isActive) {
+                    _routeHistory.value = trail
+                    if (trail.isEmpty()) {
+                        _feedbackMessage.value = "No historical logs found for the selected time range"
+                    } else {
+                        _feedbackMessage.value = "Loaded ${trail.size} breadcrumbs for historical playback"
+                    }
                 }
             } catch (e: java.lang.Exception) {
-                Log.e(TAG, "Failed loading route coordinate range: ${e.message}")
-                _feedbackMessage.value = "Failed coordinates query: ${e.message}"
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    Log.e(TAG, "Failed loading route coordinate range: ${e.message}")
+                    _feedbackMessage.value = "Failed coordinates query: ${e.message}"
+                }
             } finally {
-                _historyLoading.value = false
+                if (this.isActive) {
+                    _historyLoading.value = false
+                }
             }
         }
+        historyLoadingJob = job
+        abortController.register("playback_history", job)
     }
 
     fun loadPlaybackHistory(deviceId: Long, hours: Int = 12) {
-        viewModelScope.launch {
+        historyLoadingJob?.cancel()
+        val job = viewModelScope.launch {
             _historyLoading.value = true
             _routeHistory.value = emptyList()
             try {
@@ -760,19 +918,28 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 val trail = wrapSync("Route history") {
                     repository.getRouteHistory(deviceId, fromStr, toStr)
                 }
-                _routeHistory.value = trail
-                if (trail.isEmpty()) {
-                    _feedbackMessage.value = "No historical trail entries found in past ${hours}h for this asset"
-                } else {
-                    _feedbackMessage.value = "Loaded ${trail.size} breadcrumbs for historical playback"
+                // Ensure we are still active after async call
+                if (this.isActive) {
+                    _routeHistory.value = trail
+                    if (trail.isEmpty()) {
+                        _feedbackMessage.value = "No historical trail entries found in past ${hours}h for this asset"
+                    } else {
+                        _feedbackMessage.value = "Loaded ${trail.size} breadcrumbs for historical playback"
+                    }
                 }
             } catch (e: java.lang.Exception) {
-                Log.e(TAG, "Failed loading playback coordinates: ${e.message}")
-                _feedbackMessage.value = "Failed coordinates query: ${e.message}"
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    Log.e(TAG, "Failed loading playback coordinates: ${e.message}")
+                    _feedbackMessage.value = "Failed coordinates query: ${e.message}"
+                }
             } finally {
-                _historyLoading.value = false
+                if (this.isActive) {
+                    _historyLoading.value = false
+                }
             }
         }
+        historyLoadingJob = job
+        abortController.register("playback_history", job)
     }
 
     private fun 纯FormatDate(date: Date): String {
@@ -783,22 +950,190 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
 
     // Mapper conversion list back output helper
     fun getMapMarkers(realtimePositions: Map<Long, Position>, devices: List<Device>): List<MapMarker> {
-        return devices.map { device ->
+        val cache = cachedDevices.value
+        val listToMap = if (devices.isNotEmpty()) {
+            devices
+        } else {
+            cache.map { cached ->
+                Device(
+                    id = cached.id,
+                    name = cached.name,
+                    uniqueId = cached.uniqueId,
+                    status = cached.status,
+                    lastUpdate = cached.lastUpdate,
+                    category = cached.category
+                )
+            }
+        }
+        return listToMap.map { device ->
             val pos = realtimePositions[device.id]
+            val cached = cache.find { it.id == device.id }
             MapMarker(
                 id = device.id,
                 name = device.name,
-                latitude = pos?.latitude ?: 0.0,
-                longitude = pos?.longitude ?: 0.0,
+                latitude = pos?.latitude ?: cached?.latitude ?: 0.0,
+                longitude = pos?.longitude ?: cached?.longitude ?: 0.0,
                 course = pos?.course?.toFloat() ?: 0f,
                 status = device.status,
-                speedKmh = pos?.speedKmh ?: 0.0,
+                speedKmh = pos?.speedKmh ?: cached?.speed ?: 0.0,
                 category = device.category,
                 altitude = pos?.altitude ?: 0.0,
-                lastUpdate = pos?.deviceTime ?: device.lastUpdate,
-                address = pos?.address,
+                lastUpdate = pos?.deviceTime ?: device.lastUpdate ?: cached?.lastUpdate,
+                address = pos?.address ?: cached?.address,
                 accuracy = pos?.accuracy ?: 0.0
             )
         }.filter { it.latitude != 0.0 && it.longitude != 0.0 }
     }
+
+    private fun startGeofenceMonitoring() {
+        viewModelScope.launch {
+            combine(realtimePositions, _geofences) { positions, gfList ->
+                Pair(positions, gfList)
+            }.collect { (positions, gfList) ->
+                evaluateGeofences(positions, gfList)
+            }
+        }
+    }
+
+    private suspend fun evaluateGeofences(
+        positions: Map<Long, Position>,
+        gfList: List<CustomGeofence>
+    ) {
+        if (positions.isEmpty() || gfList.isEmpty()) return
+
+        val devicesMap = devices.value.associateBy { it.id }
+
+        for ((deviceId, pos) in positions) {
+            val deviceName = devicesMap[deviceId]?.name ?: "Device #$deviceId"
+
+            for (gf in gfList) {
+                if (!gf.isActive) continue
+                if (gf.targetDeviceId != null && gf.targetDeviceId > 0 && gf.targetDeviceId != deviceId) {
+                    continue
+                }
+
+                val isInsideNow = com.example.util.GeofenceUtils.isPositionInsideGeofence(
+                    pos.latitude,
+                    pos.longitude,
+                    gf
+                )
+
+                val stateKey = "$deviceId:${gf.id}"
+                val previouslyInside = deviceGeofenceStates[stateKey]
+
+                if (previouslyInside == null) {
+                    deviceGeofenceStates[stateKey] = isInsideNow
+                } else if (!previouslyInside && isInsideNow) {
+                    deviceGeofenceStates[stateKey] = true
+                    if (gf.triggerOnEnter) {
+                        onGeofenceTransition(
+                            deviceId = deviceId,
+                            deviceName = deviceName,
+                            geofence = gf,
+                            event = "ENTER",
+                            latitude = pos.latitude,
+                            longitude = pos.longitude
+                        )
+                    }
+                } else if (previouslyInside && !isInsideNow) {
+                    deviceGeofenceStates[stateKey] = false
+                    if (gf.triggerOnExit) {
+                        onGeofenceTransition(
+                            deviceId = deviceId,
+                            deviceName = deviceName,
+                            geofence = gf,
+                            event = "EXIT",
+                            latitude = pos.latitude,
+                            longitude = pos.longitude
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun onGeofenceTransition(
+        deviceId: Long,
+        deviceName: String,
+        geofence: CustomGeofence,
+        event: String,
+        latitude: Double,
+        longitude: Double
+    ) {
+        val actionText = if (event == "ENTER") "entered" else "left"
+        val emojiText = if (event == "ENTER") "🚨 GEOFENCE ENTER" else "🚪 GEOFENCE EXIT"
+        val title = "$emojiText: $deviceName"
+        val message = "$deviceName $actionText geofence zone '${geofence.name}'"
+
+        // 1. Post system push notification
+        com.example.util.NotificationHelper.sendGeofenceNotification(
+            context = getApplication(),
+            title = title,
+            message = message
+        )
+
+        // 2. Trigger feedback banner
+        _feedbackMessage.value = message
+
+        // 3. Persist in database cached alerts
+        try {
+            val alert = com.example.data.db.CachedAlert(
+                deviceId = deviceId,
+                deviceName = deviceName,
+                type = "geofence",
+                alarmType = event.lowercase(),
+                timestamp = System.currentTimeMillis(),
+                latitude = latitude,
+                longitude = longitude,
+                message = message
+            )
+            repository.saveAlert(alert)
+        } catch (e: Exception) {
+            Log.e("TraccarViewModel", "Failed to insert geofence alert: ${e.message}")
+        }
+    }
+
+    // TELEMETRY & REPORT GENERATION UTILITIES
+    suspend fun querySummaryReport(
+        deviceId: Long? = null,
+        from: String,
+        to: String,
+        daily: Boolean? = null
+    ): List<com.example.data.model.ReportSummary> = wrapSync("Summary Report") {
+        repository.getSummaryReport(deviceId, from, to, daily)
+    }
+
+    suspend fun queryTripsReport(
+        deviceId: Long? = null,
+        from: String,
+        to: String
+    ): List<com.example.data.model.ReportTrip> = wrapSync("Trips Report") {
+        repository.getTripsReport(deviceId, from, to)
+    }
+
+    suspend fun queryStopsReport(
+        deviceId: Long? = null,
+        from: String,
+        to: String
+    ): List<com.example.data.model.ReportStop> = wrapSync("Stops Report") {
+        repository.getStopsReport(deviceId, from, to)
+    }
+
+    suspend fun queryEventsReport(
+        deviceId: Long? = null,
+        from: String,
+        to: String,
+        type: String? = null
+    ): List<com.example.data.model.Event> = wrapSync("Events Report") {
+        repository.getEventsReport(deviceId, from, to, type)
+    }
+
+    suspend fun queryRouteReport(
+        deviceId: Long,
+        from: String,
+        to: String
+    ): List<Position> = wrapSync("Route History Report") {
+        repository.getRouteHistory(deviceId, from, to)
+    }
 }
+
