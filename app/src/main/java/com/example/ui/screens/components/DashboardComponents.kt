@@ -31,27 +31,14 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.example.data.db.CachedAlert
 import com.example.data.db.CachedDevice
+import com.example.data.model.ConsolidatedAlert
 import com.example.data.model.Device
+import com.example.data.model.GeofenceAlert
 import com.example.data.model.Position
+import com.example.util.UnitFormatter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
-data class GeofenceAlert(
-    val id: String = java.util.UUID.randomUUID().toString(),
-    val deviceName: String,
-    val geofenceName: String,
-    val type: String, // "ENTERED" or "EXITED"
-    val timestamp: Long = System.currentTimeMillis()
-)
-
-data class ConsolidatedAlert(
-    val deviceName: String,
-    val alertType: String,
-    val isEntered: Boolean,
-    val message: String,
-    val timestamp: Long = System.currentTimeMillis()
-)
 
 fun getMaintenanceStatus(deviceId: Long, odometerMeters: Double?): Triple<Boolean, Boolean, Double> {
     val odoKm = if (odometerMeters != null) {
@@ -73,6 +60,7 @@ fun FleetDevicesDrawerOverlay(
     cachedDevices: List<CachedDevice>,
     realtimePositions: Map<Long, Position>,
     selectedDeviceId: Long?,
+    unitSystem: String = "metric",
     onSelectDevice: (Long, Double?, Double?) -> Unit,
     onSelectAllFleet: () -> Unit
 ) {
@@ -409,8 +397,9 @@ fun FleetDevicesDrawerOverlay(
                                             verticalArrangement = Arrangement.spacedBy(2.dp)
                                         ) {
                                             if (isOnline) {
+                                                val isMetric = unitSystem == "metric"
                                                 Text(
-                                                    text = "${String.format("%.0f", speedVal)} km/h",
+                                                    text = UnitFormatter.speed(speedVal, isMetric),
                                                     color = Color(0xFF10B981),
                                                     fontSize = 11.sp,
                                                     fontWeight = FontWeight.Bold

@@ -207,4 +207,30 @@ object TelemetrySanitizerService {
     ): String {
         return formatIsoToLocalDisplay(isoString, DISPLAY_DATE_PATTERN, targetTimeZone)
     }
+
+    // ==========================================
+    // 4. TIMEFRAME RANGE CALCULATION
+    // ==========================================
+
+    fun computeRange(timeframe: String): Pair<String, String> {
+        val toTime = java.util.Date()
+        val fromTime = when (timeframe) {
+            "Today" -> {
+                java.util.Calendar.getInstance().apply {
+                    set(java.util.Calendar.HOUR_OF_DAY, 0)
+                    set(java.util.Calendar.MINUTE, 0)
+                    set(java.util.Calendar.SECOND, 0)
+                    set(java.util.Calendar.MILLISECOND, 0)
+                }.time
+            }
+            "Weekly" -> java.util.Date(toTime.time - 7L * 24 * 3600 * 1000L)
+            "Monthly" -> java.util.Date(toTime.time - 30L * 24 * 3600 * 1000L)
+            "Past 3h" -> java.util.Date(toTime.time - 3L * 3600 * 1000L)
+            "Past 12h" -> java.util.Date(toTime.time - 12L * 3600 * 1000L)
+            "Past 24h" -> java.util.Date(toTime.time - 24L * 3600 * 1000L)
+            "Past 72h" -> java.util.Date(toTime.time - 72L * 3600 * 1000L)
+            else -> java.util.Date(toTime.time - 24L * 3600 * 1000L)
+        }
+        return Pair(formatToUtcIso8601(fromTime), formatToUtcIso8601(toTime))
+    }
 }

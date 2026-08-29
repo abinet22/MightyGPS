@@ -26,10 +26,15 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.*
 import com.example.ui.screens.components.MetricBox
 import com.example.ui.viewmodel.TraccarViewModel
+import com.example.util.TelemetrySanitizerService
 import com.example.util.UnitFormatter
 import com.example.util.generatePdfReport
 import com.example.util.sharePdfReport
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -183,40 +188,29 @@ fun ReportsTab(
                             reportLoading = true
                             scope.launch {
                                 try {
-                                    val toTime = Date()
-                                    val fromTime = when (reportTimeframeType) {
-                                        "Today" -> {
-                                            Calendar.getInstance().apply {
-                                                set(Calendar.HOUR_OF_DAY, 0)
-                                                set(Calendar.MINUTE, 0)
-                                                set(Calendar.SECOND, 0)
-                                            }.time
-                                        }
-                                        "Weekly" -> Date(toTime.time - 7L * 24 * 3600 * 1000L)
-                                        "Monthly" -> Date(toTime.time - 30L * 24 * 3600 * 1000L)
-                                        "Past 3h" -> Date(toTime.time - 3L * 3600 * 1000L)
-                                        "Past 12h" -> Date(toTime.time - 12L * 3600 * 1000L)
-                                        "Past 72h" -> Date(toTime.time - 72L * 3600 * 1000L)
-                                        else -> Date(toTime.time - 24L * 3600 * 1000L)
+                                    val (fromStr, toStr) = TelemetrySanitizerService.computeRange(reportTimeframeType)
+
+                                    coroutineScope {
+                                        val sumsDeferred   = async(Dispatchers.IO) { viewModel.repository.getSummaryReport(devId, fromStr, toStr) }
+                                        val tripsDeferred  = async(Dispatchers.IO) { viewModel.repository.getTripsReport(devId, fromStr, toStr) }
+                                        val stopsDeferred  = async(Dispatchers.IO) { viewModel.repository.getStopsReport(devId, fromStr, toStr) }
+                                        val routeDeferred  = async(Dispatchers.IO) { viewModel.repository.getRouteHistory(devId, fromStr, toStr) }
+                                        val eventsDeferred = async(Dispatchers.IO) { viewModel.repository.getEventsReport(devId, fromStr, toStr) }
+
+                                        val sums   = sumsDeferred.await()
+                                        val trips  = tripsDeferred.await()
+                                        val stops  = stopsDeferred.await()
+                                        val route  = routeDeferred.await()
+                                        val events = eventsDeferred.await()
+
+                                        summaryResults = sums
+                                        tripResults = trips
+                                        stopResults = stops
+                                        routeResults = route
+                                        eventResults = events
+
+                                        viewModel.triggerFeedback("Report compiled for $reportTimeframeType: ${trips.size} trips, ${stops.size} stops, ${route.size} coordinates")
                                     }
-                                    val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-                                    sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
-                                    val fromStr = sdf.format(fromTime)
-                                    val toStr = sdf.format(toTime)
-
-                                    val sums = viewModel.repository.getSummaryReport(devId, fromStr, toStr)
-                                    val trips = viewModel.repository.getTripsReport(devId, fromStr, toStr)
-                                    val stops = viewModel.repository.getStopsReport(devId, fromStr, toStr)
-                                    val route = viewModel.repository.getRouteHistory(devId, fromStr, toStr)
-                                    val events = viewModel.repository.getEventsReport(devId, fromStr, toStr)
-
-                                    summaryResults = sums
-                                    tripResults = trips
-                                    stopResults = stops
-                                    routeResults = route
-                                    eventResults = events
-
-                                    viewModel.triggerFeedback("Report compiled for $reportTimeframeType: ${trips.size} trips, ${stops.size} stops, ${route.size} coordinates")
                                 } catch (e: Exception) {
                                     viewModel.triggerFeedback("Query failed: " + e.message)
                                 } finally {
@@ -377,24 +371,28 @@ fun ReportsTab(
                 Button(
                     onClick = {
                         if (currentDev != null) {
-                            val detailLogStrings = if (tripResults.isNotEmpty()) {
-                                tripResults.map { "Trip: ${it.startAddress ?: "Depot"} -> ${it.endAddress ?: "Destination"} (${UnitFormatter.distance(it.distanceKm, isMetric)}, ${it.durationFormatted})" }
-                            } else {
-                                routeResults.take(15).map { "${it.deviceTime}: ${UnitFormatter.speed(it.speedKmh, isMetric)} at ${it.address ?: "${it.latitude}, ${it.longitude}"}" }
-                            }
-                            val pdfFile = generatePdfReport(
-                                context = context,
-                                device = currentDev,
-                                reportTimeframe = reportTimeframeType,
-                                totalDistance = formattedTotalDist,
-                                avgSpeed = formattedAvgSpd,
-                                maxSpeed = formattedMaxSpd,
-                                speedingViolations = eventResults.count { it.type == "alarm" || it.attributes.containsKey("alarm") }.toString(),
-                                geofenceBreaks = eventResults.count { it.type.contains("geofence", ignoreCase = true) }.toString(),
-                                detailLogs = detailLogStrings
-                            )
-                            if (pdfFile != null) {
-                                sharePdfReport(context, pdfFile, currentDev.name)
+                            scope.launch {
+                                val detailLogStrings = if (tripResults.isNotEmpty()) {
+                                    tripResults.map { "Trip: ${it.startAddress ?: "Depot"} -> ${it.endAddress ?: "Destination"} (${UnitFormatter.distance(it.distanceKm, isMetric)}, ${it.durationFormatted})" }
+                                } else {
+                                    routeResults.take(15).map { "${it.deviceTime}: ${UnitFormatter.speed(it.speedKmh, isMetric)} at ${it.address ?: "${it.latitude}, ${it.longitude}"}" }
+                                }
+                                val pdfFile = withContext(Dispatchers.Default) {
+                                    generatePdfReport(
+                                        context = context,
+                                        device = currentDev,
+                                        reportTimeframe = reportTimeframeType,
+                                        totalDistance = formattedTotalDist,
+                                        avgSpeed = formattedAvgSpd,
+                                        maxSpeed = formattedMaxSpd,
+                                        speedingViolations = eventResults.count { it.type == "alarm" || it.attributes.containsKey("alarm") }.toString(),
+                                        geofenceBreaks = eventResults.count { it.type.contains("geofence", ignoreCase = true) }.toString(),
+                                        detailLogs = detailLogStrings
+                                    )
+                                }
+                                if (pdfFile != null) {
+                                    sharePdfReport(context, pdfFile, currentDev.name)
+                                }
                             }
                         }
                     },

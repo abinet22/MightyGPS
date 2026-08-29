@@ -2,6 +2,7 @@ package com.example.data.repo
 
 import android.content.Context
 import android.util.Log
+import android.util.LruCache
 import com.example.data.api.TraccarApi
 import com.example.data.api.TraccarWebSocket
 import com.example.data.db.AppDatabase
@@ -42,6 +43,21 @@ class TraccarRepository(private val context: Context) {
 
     suspend fun saveAlert(alert: CachedAlert) {
         database.alertDao().insertAlert(alert)
+    }
+
+    // Lightweight In-Memory Caches for Reports & Route Histories
+    private val routeCache = LruCache<String, List<Position>>(30)
+    private val summaryCache = LruCache<String, List<ReportSummary>>(30)
+    private val tripsCache = LruCache<String, List<ReportTrip>>(30)
+    private val stopsCache = LruCache<String, List<ReportStop>>(30)
+    private val eventsCache = LruCache<String, List<Event>>(30)
+
+    fun clearReportCaches() {
+        routeCache.evictAll()
+        summaryCache.evictAll()
+        tripsCache.evictAll()
+        stopsCache.evictAll()
+        eventsCache.evictAll()
     }
 
     // Sandbox Simulation helpers
@@ -230,6 +246,7 @@ class TraccarRepository(private val context: Context) {
         traccarSocket?.disconnect()
         sessionManager.logout()
         com.example.data.api.TraccarCookieJar.clear()
+        clearReportCaches()
         initializeServices()
         _realtimePositions.value = emptyMap()
         _realtimeDevices.value = emptyList()
@@ -424,7 +441,10 @@ class TraccarRepository(private val context: Context) {
         to: String,
         daily: Boolean? = null
     ): List<ReportSummary> {
-        if (isDemo()) {
+        val cacheKey = "${deviceId ?: "all"}:$from:$to:$daily"
+        summaryCache.get(cacheKey)?.let { return it }
+
+        val result = if (isDemo()) {
             delay(400)
             val devList = if (deviceId != null) {
                 simulatedDevices.filter { it.id == deviceId }
@@ -437,7 +457,7 @@ class TraccarRepository(private val context: Context) {
             val durationHours = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: (System.currentTimeMillis() - 24 * 3600 * 1000L))) / (1000 * 3600.0)
             val daysMultiplier = maxOf(0.5, durationHours / 24.0)
 
-            return devList.map { dev ->
+            devList.map { dev ->
                 val baseDistanceMeters = (85000.0 + (dev.id * 24500.0)) * daysMultiplier
                 val avgSpeedKnots = 18.0 + (dev.id % 4) * 3.5
                 val maxSpeedKnots = 42.0 + (dev.id % 3) * 6.0
@@ -456,7 +476,7 @@ class TraccarRepository(private val context: Context) {
             }
         } else {
             val api = traccarApi ?: return emptyList()
-            return try {
+            try {
                 val results = api.getSummaryReport(deviceId = deviceId, from = from, to = to, daily = daily)
                 if (results.isNotEmpty()) {
                     results
@@ -498,6 +518,10 @@ class TraccarRepository(private val context: Context) {
                 emptyList()
             }
         }
+        if (result.isNotEmpty()) {
+            summaryCache.put(cacheKey, result)
+        }
+        return result
     }
 
     suspend fun getTripsReport(
@@ -505,7 +529,10 @@ class TraccarRepository(private val context: Context) {
         from: String,
         to: String
     ): List<ReportTrip> {
-        if (isDemo()) {
+        val cacheKey = "${deviceId ?: "all"}:$from:$to"
+        tripsCache.get(cacheKey)?.let { return it }
+
+        val result = if (isDemo()) {
             delay(500)
             val devId = deviceId ?: 1L
             val devName = simulatedDevices.find { it.id == devId }?.name ?: "Interstate Truck 04"
@@ -568,16 +595,20 @@ class TraccarRepository(private val context: Context) {
                     )
                 )
             }
-            return trips
+            trips
         } else {
             val api = traccarApi ?: return emptyList()
-            return try {
+            try {
                 api.getTripsReport(deviceId = deviceId, from = from, to = to)
             } catch (e: Exception) {
                 Log.w(TAG, "getTripsReport remote failed: ${e.message}")
                 emptyList()
             }
         }
+        if (result.isNotEmpty()) {
+            tripsCache.put(cacheKey, result)
+        }
+        return result
     }
 
     suspend fun getStopsReport(
@@ -585,7 +616,10 @@ class TraccarRepository(private val context: Context) {
         from: String,
         to: String
     ): List<ReportStop> {
-        if (isDemo()) {
+        val cacheKey = "${deviceId ?: "all"}:$from:$to"
+        stopsCache.get(cacheKey)?.let { return it }
+
+        val result = if (isDemo()) {
             delay(400)
             val devId = deviceId ?: 1L
             val devName = simulatedDevices.find { it.id == devId }?.name ?: "Interstate Truck 04"
@@ -633,16 +667,20 @@ class TraccarRepository(private val context: Context) {
                     )
                 )
             }
-            return stops
+            stops
         } else {
             val api = traccarApi ?: return emptyList()
-            return try {
+            try {
                 api.getStopsReport(deviceId = deviceId, from = from, to = to)
             } catch (e: Exception) {
                 Log.w(TAG, "getStopsReport remote failed: ${e.message}")
                 emptyList()
             }
         }
+        if (result.isNotEmpty()) {
+            stopsCache.put(cacheKey, result)
+        }
+        return result
     }
 
     suspend fun getEventsReport(
@@ -651,12 +689,15 @@ class TraccarRepository(private val context: Context) {
         to: String,
         type: String? = null
     ): List<Event> {
-        if (isDemo()) {
+        val cacheKey = "${deviceId ?: "all"}:$from:$to:$type"
+        eventsCache.get(cacheKey)?.let { return it }
+
+        val result = if (isDemo()) {
             delay(300)
             val devId = deviceId ?: 1L
             val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
             val toTime = System.currentTimeMillis()
-            return listOf(
+            listOf(
                 Event(1, "deviceMoving", format.format(Date(toTime - 30 * 60 * 1000L)), devId, 101, 0, mapOf("speed" to 58.2)),
                 Event(2, "geofenceEnter", format.format(Date(toTime - 90 * 60 * 1000L)), devId, 102, 101, mapOf("geofence" to "SF Logistics & Central Depot")),
                 Event(3, "alarm", format.format(Date(toTime - 180 * 60 * 1000L)), devId, 103, 0, mapOf("alarm" to "overspeed", "speed" to 88.4)),
@@ -665,17 +706,24 @@ class TraccarRepository(private val context: Context) {
             )
         } else {
             val api = traccarApi ?: return emptyList()
-            return try {
+            try {
                 api.getEventsReport(deviceId = deviceId, from = from, to = to, type = type)
             } catch (e: Exception) {
                 Log.w(TAG, "getEventsReport error: ${e.message}")
                 emptyList()
             }
         }
+        if (result.isNotEmpty()) {
+            eventsCache.put(cacheKey, result)
+        }
+        return result
     }
 
     suspend fun getRouteHistory(deviceId: Long, from: String, to: String): List<Position> {
-        if (isDemo()) {
+        val cacheKey = "$deviceId:$from:$to"
+        routeCache.get(cacheKey)?.let { return it }
+
+        val result = if (isDemo()) {
             // Generate rich mock route coordinates for historical playback & reports
             delay(500)
             val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
@@ -722,7 +770,7 @@ class TraccarRepository(private val context: Context) {
                     )
                 )
             }
-            return list
+            list
         } else {
             val api = traccarApi ?: return emptyList()
             val raw = try {
@@ -747,8 +795,12 @@ class TraccarRepository(private val context: Context) {
                     emptyList()
                 }
             }
-            return com.example.util.PositionSanitizer.sanitize(raw)
+            com.example.util.PositionSanitizer.sanitize(raw)
         }
+        if (result.isNotEmpty()) {
+            routeCache.put(cacheKey, result)
+        }
+        return result
     }
 
     suspend fun getServer(): Server? {
