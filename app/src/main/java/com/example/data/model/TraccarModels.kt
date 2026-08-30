@@ -57,7 +57,10 @@ data class Event(
     val positionId: Long = 0,
     val geofenceId: Long = 0,
     val attributes: Map<String, Any> = emptyMap()
-)
+) {
+    val eventTimeFormatted: String
+        get() = com.example.util.TelemetrySanitizerService.formatIsoToLocalDisplay(eventTime, "yyyy-MM-dd HH:mm")
+}
 
 @JsonClass(generateAdapter = true)
 data class SocketUpdate(
@@ -146,6 +149,16 @@ data class ReportTrip(
             val minutes = (totalSeconds % 3600) / 60
             return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
         }
+    val startTimeFormatted: String
+        get() = com.example.util.TelemetrySanitizerService.formatIsoToLocalDisplay(startTime, "yyyy-MM-dd HH:mm")
+    val endTimeFormatted: String
+        get() = com.example.util.TelemetrySanitizerService.formatIsoToLocalDisplay(endTime, "yyyy-MM-dd HH:mm")
+    val timeRangeFormatted: String
+        get() {
+            val start = com.example.util.TelemetrySanitizerService.formatIsoToLocalDisplay(startTime, "yyyy-MM-dd HH:mm")
+            val end = com.example.util.TelemetrySanitizerService.formatIsoToLocalDisplay(endTime, "yyyy-MM-dd HH:mm")
+            return if (startTime.isNullOrEmpty() && endTime.isNullOrEmpty()) "N/A" else "$start - $end"
+        }
 }
 
 @JsonClass(generateAdapter = true)
@@ -171,6 +184,16 @@ data class ReportStop(
             val hours = totalSeconds / 3600
             val minutes = (totalSeconds % 3600) / 60
             return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
+        }
+    val startTimeFormatted: String
+        get() = com.example.util.TelemetrySanitizerService.formatIsoToLocalDisplay(startTime, "yyyy-MM-dd HH:mm")
+    val endTimeFormatted: String
+        get() = com.example.util.TelemetrySanitizerService.formatIsoToLocalDisplay(endTime, "yyyy-MM-dd HH:mm")
+    val timeRangeFormatted: String
+        get() {
+            val start = com.example.util.TelemetrySanitizerService.formatIsoToLocalDisplay(startTime, "yyyy-MM-dd HH:mm")
+            val end = com.example.util.TelemetrySanitizerService.formatIsoToLocalDisplay(endTime, "yyyy-MM-dd HH:mm")
+            return if (startTime.isNullOrEmpty() && endTime.isNullOrEmpty()) "N/A" else "$start - $end"
         }
 }
 

@@ -498,7 +498,7 @@ fun SlippyMap(
                                         Text(
                                             text = gf.name,
                                             color = Color.White,
-                                            fontSize = 11.sp,
+                                            style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.Bold
                                         )
                                     }
@@ -547,7 +547,7 @@ fun SlippyMap(
                                         Text(
                                             text = gf.name,
                                             color = Color.White,
-                                            fontSize = 11.sp,
+                                            style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.Bold
                                         )
                                     }
@@ -662,8 +662,8 @@ fun SlippyMap(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Text("🏁", fontSize = 12.sp)
-                                Text("START", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
+                                Text("🏁", style = MaterialTheme.typography.bodySmall)
+                                Text("START", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.ExtraBold)
                             }
                         }
                     }
@@ -687,8 +687,8 @@ fun SlippyMap(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    Text("🎯", fontSize = 12.sp)
-                                    Text("END", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
+                                    Text("🎯", style = MaterialTheme.typography.bodySmall)
+                                    Text("END", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.ExtraBold)
                                 }
                             }
                         }
@@ -724,7 +724,7 @@ fun SlippyMap(
                                                 if (it.length >= 16) it.substring(11, 16) else "⏱️"
                                             } catch (e: Exception) { "⏱️" }
                                         } ?: "⏱️"
-                                        Text(timeStr, color = Color.White, fontSize = 7.sp, fontWeight = FontWeight.Bold)
+                                        Text(timeStr, color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -812,7 +812,7 @@ fun SlippyMap(
                                     Text(
                                         text = labelText,
                                         color = Color.White,
-                                        fontSize = 10.sp,
+                                        style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
@@ -836,7 +836,7 @@ fun SlippyMap(
                                 } else {
                                     Text(
                                         text = iconEmoji,
-                                        fontSize = if (isSelected) 22.sp else 18.sp
+                                        style = if (isSelected) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleMedium
                                     )
                                 }
                             }
@@ -871,13 +871,13 @@ fun SlippyMap(
                     Text(
                         "Loading Google Maps...",
                         color = Color.White,
-                        fontSize = 16.sp,
+                        style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         "Connecting to native rendering engine and GPS tiles",
                         color = Color.LightGray,
-                        fontSize = 12.sp,
+                        style = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center
                     )
                     if (showRetryButton) {
@@ -891,7 +891,7 @@ fun SlippyMap(
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = "Retry", modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Retry Connection", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text("Retry Connection", color = Color.White, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
                         }
                     }
                 }

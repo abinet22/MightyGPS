@@ -9,7 +9,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -17,17 +17,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.data.db.CachedDevice
 import com.example.data.model.Device
 import com.example.data.model.Position
 import com.example.ui.screens.components.DeviceReportPage
 import com.example.ui.screens.components.DeviceRow
+import com.example.ui.screens.components.EmptyStateView
 import com.example.ui.screens.components.OfflineDeviceRow
 import com.example.ui.screens.components.TrackScorecard
+import com.example.ui.theme.MC
 import com.example.ui.viewmodel.TraccarViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -83,9 +83,9 @@ fun DeviceDirectoryTab(
                     val online = devices.count { it.status == "online" }
                     val offline = devices.count { it.status == "offline" }
 
-                    TrackScorecard(title = "Total Active", count = total.toString(), color = Color(0xFF3B82F6), modifier = Modifier.weight(1f))
-                    TrackScorecard(title = "Moving/Online", count = online.toString(), color = Color(0xFF10B981), modifier = Modifier.weight(1f))
-                    TrackScorecard(title = "Parked/Offline", count = offline.toString(), color = Color(0xFFEF4444), modifier = Modifier.weight(1f))
+                    TrackScorecard(title = "Total Active", count = total.toString(), color = MC.AccentPrimary, modifier = Modifier.weight(1f))
+                    TrackScorecard(title = "Moving/Online", count = online.toString(), color = MC.StatusOnline, modifier = Modifier.weight(1f))
+                    TrackScorecard(title = "Parked/Offline", count = offline.toString(), color = MC.StatusOffline, modifier = Modifier.weight(1f))
                 }
 
                 // Searchable Filter Bar at the top of vehicle list
@@ -98,25 +98,25 @@ fun DeviceDirectoryTab(
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search vehicles", tint = Color(0xFF3B82F6)) },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search vehicles", tint = MC.AccentPrimary) },
                         trailingIcon = {
                             if (searchQuery.isNotEmpty()) {
                                 IconButton(onClick = { searchQuery = "" }) {
-                                    Icon(Icons.Default.Clear, contentDescription = "Clear search", tint = Color.Gray)
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear search", tint = MC.TextSecondary)
                                 }
                             }
                         },
-                        placeholder = { Text("Search by plate number, vehicle name, or IMEI...", fontSize = 13.sp, color = Color.Gray) },
+                        placeholder = { Text("Search by plate, name, or IMEI...", color = MC.TextTertiary, style = MaterialTheme.typography.bodySmall) },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedContainerColor = Color(0xFF1E293B),
-                            unfocusedContainerColor = Color(0xFF0F172A),
-                            focusedBorderColor = Color(0xFF3B82F6),
-                            unfocusedBorderColor = Color(0xFF1E293B)
+                            focusedTextColor = MC.TextPrimary,
+                            unfocusedTextColor = MC.TextPrimary,
+                            focusedContainerColor = MC.Surface2,
+                            unfocusedContainerColor = MC.Surface1,
+                            focusedBorderColor = MC.AccentPrimary,
+                            unfocusedBorderColor = MC.Surface3
                         ),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -136,13 +136,15 @@ fun DeviceDirectoryTab(
                             FilterChip(
                                 selected = isSel,
                                 onClick = { selectedStatusFilter = "All"; selectedCategoryFilter = "All" },
-                                label = { Text("All Assets", fontSize = 11.sp, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium) },
+                                label = { Text("All Assets", style = MaterialTheme.typography.labelSmall, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium) },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = Color(0xFF2563EB),
-                                    selectedLabelColor = Color.White,
-                                    containerColor = Color(0xFF1E293B),
-                                    labelColor = Color(0xFF94A3B8)
-                                )
+                                    selectedContainerColor = MC.AccentPrimary,
+                                    selectedLabelColor = MC.TextPrimary,
+                                    containerColor = MC.Surface2,
+                                    labelColor = MC.TextSecondary
+                                ),
+                                border = null,
+                                shape = RoundedCornerShape(8.dp)
                             )
                         }
                         item {
@@ -150,14 +152,16 @@ fun DeviceDirectoryTab(
                             FilterChip(
                                 selected = isSel,
                                 onClick = { selectedStatusFilter = if (isSel) "All" else "online" },
-                                leadingIcon = { Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(Color(0xFF10B981))) },
-                                label = { Text("Online", fontSize = 11.sp, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium) },
+                                leadingIcon = { Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(MC.StatusOnline)) },
+                                label = { Text("Online", style = MaterialTheme.typography.labelSmall, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium) },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = Color(0xFF10B981),
-                                    selectedLabelColor = Color.White,
-                                    containerColor = Color(0xFF1E293B),
-                                    labelColor = Color(0xFF94A3B8)
-                                )
+                                    selectedContainerColor = MC.StatusOnline,
+                                    selectedLabelColor = MC.TextPrimary,
+                                    containerColor = MC.Surface2,
+                                    labelColor = MC.TextSecondary
+                                ),
+                                border = null,
+                                shape = RoundedCornerShape(8.dp)
                             )
                         }
                         item {
@@ -165,14 +169,16 @@ fun DeviceDirectoryTab(
                             FilterChip(
                                 selected = isSel,
                                 onClick = { selectedStatusFilter = if (isSel) "All" else "offline" },
-                                leadingIcon = { Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(Color(0xFFEF4444))) },
-                                label = { Text("Offline", fontSize = 11.sp, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium) },
+                                leadingIcon = { Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(MC.StatusOffline)) },
+                                label = { Text("Offline", style = MaterialTheme.typography.labelSmall, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium) },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = Color(0xFFEF4444),
-                                    selectedLabelColor = Color.White,
-                                    containerColor = Color(0xFF1E293B),
-                                    labelColor = Color(0xFF94A3B8)
-                                )
+                                    selectedContainerColor = MC.StatusOffline,
+                                    selectedLabelColor = MC.TextPrimary,
+                                    containerColor = MC.Surface2,
+                                    labelColor = MC.TextSecondary
+                                ),
+                                border = null,
+                                shape = RoundedCornerShape(8.dp)
                             )
                         }
                         items(categories.filter { it != "All" }) { cat ->
@@ -180,13 +186,15 @@ fun DeviceDirectoryTab(
                             FilterChip(
                                 selected = isSel,
                                 onClick = { selectedCategoryFilter = if (isSel) "All" else cat },
-                                label = { Text(cat, fontSize = 11.sp, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium) },
+                                label = { Text(cat, style = MaterialTheme.typography.labelSmall, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium) },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = Color(0xFF3B82F6),
-                                    selectedLabelColor = Color.White,
-                                    containerColor = Color(0xFF1E293B),
-                                    labelColor = Color(0xFF94A3B8)
-                                )
+                                    selectedContainerColor = MC.AccentPrimary,
+                                    selectedLabelColor = MC.TextPrimary,
+                                    containerColor = MC.Surface2,
+                                    labelColor = MC.TextSecondary
+                                ),
+                                border = null,
+                                shape = RoundedCornerShape(8.dp)
                             )
                         }
                     }
@@ -195,34 +203,27 @@ fun DeviceDirectoryTab(
                 // Unified Offline support notice if data from database cache is shown
                 if (devices.isEmpty() && cachedDevices.isNotEmpty()) {
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0x33F59E0B)),
+                        colors = CardDefaults.cardColors(containerColor = MC.StatusIdle.copy(alpha = 0.15f)),
+                        shape = RoundedCornerShape(8.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(bottom = 12.dp)
                     ) {
-                        Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Network offline. Loading local secure cached database coordinates.", fontSize = 11.sp, color = Color(0xFFFDE68A))
+                        Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = MC.StatusIdle, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Network offline. Loading local secure cached database coordinates.", style = MaterialTheme.typography.labelSmall, color = MC.StatusIdle)
                         }
                     }
                 }
 
                 // Rendering the actual list elements
                 if (devices.isEmpty() && cachedDevices.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color.DarkGray, modifier = Modifier.size(48.dp))
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text("No active hardware devices configured.", color = Color.Gray, fontSize = 13.sp)
-                            Text("Click the (+) FAB button to commission this fleet's first asset tracker.", color = Color.Gray, fontSize = 11.sp)
-                        }
-                    }
+                    EmptyStateView(
+                        icon = Icons.Default.DirectionsCar,
+                        title = "No active hardware devices configured",
+                        subtitle = "Click the (+) FAB button to commission this fleet's first asset tracker."
+                    )
                 } else {
                     val matchDevice = { name: String, imei: String, status: String, category: String?, model: String?, phone: String?, attrs: Map<String, Any> ->
                         val matchesQuery = if (searchQuery.isBlank()) true else {

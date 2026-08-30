@@ -41,8 +41,8 @@ fun AdminScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text("SaaS Admin Console", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                        Text("Manage Multi-Tenant Subgroups & Operators", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                        Text("SaaS Admin Console", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color.White)
+                        Text("Manage Multi-Tenant Subgroups & Operators", style = MaterialTheme.typography.bodySmall, color = Color(0xFF94A3B8))
                     }
                 },
                 navigationIcon = {
@@ -82,8 +82,8 @@ fun AdminScreen(
                     modifier = Modifier.weight(1.0f)
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text("Managed Tenants", color = Color.Gray, fontSize = 10.sp)
-                        Text(usersList.size.toString(), color = Color(0xFF3B82F6), fontSize = 20.sp, fontWeight = FontWeight.Black)
+                        Text("Managed Tenants", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                        Text(usersList.size.toString(), color = Color(0xFF3B82F6), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
                     }
                 }
                 Card(
@@ -91,20 +91,20 @@ fun AdminScreen(
                     modifier = Modifier.weight(1.0f)
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text("SaaS Tier", color = Color.Gray, fontSize = 10.sp)
-                        Text("Premium Enterprise", color = Color(0xFF10B981), fontSize = 12.sp, fontWeight = FontWeight.Black, modifier = Modifier.padding(top = 8.dp))
+                        Text("SaaS Tier", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                        Text("Premium Enterprise", color = Color(0xFF10B981), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Black, modifier = Modifier.padding(top = 8.dp))
                     }
                 }
             }
 
-            Text("Authorized Operators & Tenants", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.padding(bottom = 12.dp))
+            Text("Authorized Operators & Tenants", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 12.dp))
 
             if (usersList.isEmpty()) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.Default.AccountBox, contentDescription = null, tint = Color.DarkGray, modifier = Modifier.size(48.dp))
                         Spacer(modifier = Modifier.height(12.dp))
-                        Text("No sub-users registered.", color = Color.Gray, fontSize = 13.sp)
+                        Text("No sub-users registered.", color = Color.Gray, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             } else {
@@ -129,10 +129,10 @@ fun AdminScreen(
     if (showAddUserDialog) {
         AlertDialog(
             onDismissRequest = { showAddUserDialog = false },
-            title = { Text("Delegate Organization User", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold) },
+            title = { Text("Delegate Organization User", color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Provision a new operator handle onto this enterprise tenant partition.", fontSize = 11.sp, color = Color.LightGray)
+                    Text("Provision a new operator handle onto this enterprise tenant partition.", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
                     
                     OutlinedTextField(
                         value = newUserName,
@@ -161,7 +161,7 @@ fun AdminScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Grant Tenant Admin Rights?", color = Color.White, fontSize = 13.sp)
+                        Text("Grant Tenant Admin Rights?", color = Color.White, style = MaterialTheme.typography.bodyMedium)
                         Switch(
                             checked = newUserPrivileged,
                             onCheckedChange = { newUserPrivileged = it },
@@ -225,8 +225,8 @@ fun UserAdminCard(
             }
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(user.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text(user.email, color = Color.Gray, fontSize = 11.sp)
+                Text(user.name, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text(user.email, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
             }
             if (user.id != 101L) { // Prevent deleting primary mock admin for demo security
                 IconButton(onClick = onDelete) {
@@ -235,7 +235,7 @@ fun UserAdminCard(
             } else {
                 Text(
                     text = "PRIMARY",
-                    fontSize = 9.sp,
+                    style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF10B981),
                     modifier = Modifier.padding(end = 8.dp)

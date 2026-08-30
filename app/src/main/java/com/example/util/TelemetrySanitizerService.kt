@@ -152,9 +152,9 @@ object TelemetrySanitizerService {
     // ==========================================
 
     private const val ISO_8601_PATTERN = "yyyy-MM-dd'T'HH:mm:ss'Z'"
-    private const val DISPLAY_DATETIME_PATTERN = "MMM dd, yyyy HH:mm"
-    private const val DISPLAY_TIME_PATTERN = "HH:mm:ss"
-    private const val DISPLAY_DATE_PATTERN = "MMM dd, yyyy"
+    private const val DISPLAY_DATETIME_PATTERN = "yyyy-MM-dd HH:mm"
+    private const val DISPLAY_TIME_PATTERN = "HH:mm"
+    private const val DISPLAY_DATE_PATTERN = "yyyy-MM-dd"
 
     fun getUtcIso8601Formatter(): java.text.SimpleDateFormat {
         val format = java.text.SimpleDateFormat(ISO_8601_PATTERN, Locale.US)
@@ -167,19 +167,37 @@ object TelemetrySanitizerService {
     }
 
     fun parseUtcIso8601(isoString: String?): java.util.Date? {
-        if (isoString.isNullOrEmpty()) return null
-        return try {
-            getUtcIso8601Formatter().parse(isoString)
-        } catch (_: Exception) {
+        if (isoString.isNullOrBlank()) return null
+        val clean = isoString.trim()
+
+        val patterns = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
+            "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm",
+            "yyyy-MM-dd HH:mm:ss.SSS",
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd HH:mm"
+        )
+
+        for (p in patterns) {
             try {
-                // Try fallback without trailing Z or with millis
-                val fallbackFormat = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
-                fallbackFormat.timeZone = java.util.TimeZone.getTimeZone("UTC")
-                fallbackFormat.parse(isoString)
+                val sdf = java.text.SimpleDateFormat(p, Locale.US)
+                if (p.contains("Z") || p.contains("XXX")) {
+                    sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                }
+                val parsed = sdf.parse(clean)
+                if (parsed != null) return parsed
             } catch (_: Exception) {
-                null
+                // Try next pattern
             }
         }
+        return null
     }
 
     fun formatIsoToLocalDisplay(
@@ -187,11 +205,31 @@ object TelemetrySanitizerService {
         pattern: String = DISPLAY_DATETIME_PATTERN,
         targetTimeZone: java.util.TimeZone = java.util.TimeZone.getDefault()
     ): String {
-        val date = parseUtcIso8601(isoString) ?: return isoString ?: "N/A"
-        val localFormat = java.text.SimpleDateFormat(pattern, Locale.US).apply {
-            timeZone = targetTimeZone
+        if (isoString.isNullOrBlank()) return "N/A"
+        val date = parseUtcIso8601(isoString)
+        if (date != null) {
+            val localFormat = java.text.SimpleDateFormat(pattern, Locale.US).apply {
+                timeZone = targetTimeZone
+            }
+            return localFormat.format(date)
         }
-        return localFormat.format(date)
+
+        // Fallback string manipulation to ensure seconds, milliseconds, and offsets like .000+00:00 are removed
+        return try {
+            var str = isoString.replace('T', ' ').trim()
+            val plusIdx = str.indexOf('+')
+            if (plusIdx > 0) str = str.substring(0, plusIdx).trim()
+            if (str.endsWith("Z", ignoreCase = true)) str = str.substring(0, str.length - 1).trim()
+            val dotIdx = str.indexOf('.')
+            if (dotIdx > 0) str = str.substring(0, dotIdx).trim()
+            if (str.length >= 16 && str.contains("-") && str.contains(":")) {
+                str.substring(0, 16)
+            } else {
+                str
+            }
+        } catch (_: Exception) {
+            isoString
+        }
     }
 
     fun formatIsoToLocalTime(

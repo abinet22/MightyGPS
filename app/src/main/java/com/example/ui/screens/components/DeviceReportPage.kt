@@ -1,6 +1,5 @@
 package com.example.ui.screens.components
 
-import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -18,238 +17,200 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.example.data.model.Device
-import com.example.data.model.Event
-import com.example.data.model.Position
-import com.example.data.model.ReportStop
-import com.example.data.model.ReportSummary
-import com.example.data.model.ReportTrip
+import com.example.data.model.*
+import com.example.ui.theme.MC
 import com.example.ui.viewmodel.TraccarViewModel
-import com.example.util.RouteSegment
 import com.example.util.TelemetrySanitizerService
 import com.example.util.UnitFormatter
 import com.example.util.generatePdfReport
-import com.example.util.segmentRoute
 import com.example.util.sharePdfReport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
+import java.util.*
 
 @Composable
 fun DeviceReportPage(
+    viewModel: TraccarViewModel,
     device: Device,
     position: Position?,
-    viewModel: TraccarViewModel,
+    appLanguage: String,
     onBack: () -> Unit,
     onViewOnMap: () -> Unit,
-    onViewPlayback: () -> Unit,
-    appLanguage: String
+    onViewPlayback: () -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val isMetric = viewModel.sessionManager.unitSystem == "metric"
+
     var reportTimeframe by remember { mutableStateOf("Today") }
     var activeSubTab by remember { mutableStateOf("Overview") }
-
-    var reportPositions by remember { mutableStateOf<List<Position>>(emptyList()) }
-    var reportTrips by remember { mutableStateOf<List<ReportTrip>>(emptyList()) }
-    var reportStops by remember { mutableStateOf<List<ReportStop>>(emptyList()) }
-    var reportSummary by remember { mutableStateOf<ReportSummary?>(null) }
-    var reportEvents by remember { mutableStateOf<List<Event>>(emptyList()) }
     var reportLoading by remember { mutableStateOf(false) }
 
+    var reportRoute by remember { mutableStateOf<List<Position>>(emptyList()) }
+    var reportTrips by remember { mutableStateOf<List<ReportTrip>>(emptyList()) }
+    var reportStops by remember { mutableStateOf<List<ReportStop>>(emptyList()) }
+    var reportSummaries by remember { mutableStateOf<List<ReportSummary>>(emptyList()) }
+    var reportEvents by remember { mutableStateOf<List<Event>>(emptyList()) }
+
+    // Fetch report data asynchronously in parallel
     LaunchedEffect(device.id, reportTimeframe) {
+        // Clear previous report data immediately to avoid stale data while new report loads
+        reportRoute = emptyList()
+        reportTrips = emptyList()
+        reportStops = emptyList()
+        reportSummaries = emptyList()
+        reportEvents = emptyList()
         reportLoading = true
         try {
             val (fromStr, toStr) = TelemetrySanitizerService.computeRange(reportTimeframe)
 
             coroutineScope {
-                val trailDeferred   = async(Dispatchers.IO) { viewModel.repository.getRouteHistory(device.id, fromStr, toStr) }
-                val tripsDeferred   = async(Dispatchers.IO) { viewModel.repository.getTripsReport(device.id, fromStr, toStr) }
-                val stopsDeferred   = async(Dispatchers.IO) { viewModel.repository.getStopsReport(device.id, fromStr, toStr) }
-                val summaryDeferred = async(Dispatchers.IO) { viewModel.repository.getSummaryReport(device.id, fromStr, toStr) }
-                val eventsDeferred  = async(Dispatchers.IO) { viewModel.repository.getEventsReport(device.id, fromStr, toStr) }
+                val trailDeferred     = async(Dispatchers.IO) { viewModel.repository.getRouteHistory(device.id, fromStr, toStr) }
+                val tripsDeferred     = async(Dispatchers.IO) { viewModel.repository.getTripsReport(device.id, fromStr, toStr) }
+                val stopsDeferred     = async(Dispatchers.IO) { viewModel.repository.getStopsReport(device.id, fromStr, toStr) }
+                val summariesDeferred = async(Dispatchers.IO) { viewModel.repository.getSummaryReport(device.id, fromStr, toStr) }
+                val eventsDeferred    = async(Dispatchers.IO) { viewModel.repository.getEventsReport(device.id, fromStr, toStr) }
 
-                reportPositions = trailDeferred.await()
-                reportTrips     = tripsDeferred.await()
-                reportStops     = stopsDeferred.await()
-                reportSummary   = summaryDeferred.await().firstOrNull()
-                reportEvents    = eventsDeferred.await()
+                val trail     = trailDeferred.await()
+                val trips     = tripsDeferred.await()
+                val stops     = stopsDeferred.await()
+                val summaries = summariesDeferred.await()
+                val events    = eventsDeferred.await()
+
+                reportRoute = trail
+                reportTrips = trips
+                reportStops = stops
+                reportSummaries = summaries
+                reportEvents = events
             }
         } catch (e: Exception) {
-            android.util.Log.w("DeviceReportPage", "Report data fetch notice: ${e.message}")
-            reportPositions = emptyList()
+            e.printStackTrace()
         } finally {
             reportLoading = false
         }
     }
 
-    val totalDistanceValueKm = remember(reportPositions, reportTrips, reportSummary) {
-        reportSummary?.distanceKm?.takeIf { it > 0 }
-            ?: (reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
-            ?: (reportPositions.size * 1.85))
-    }
-
-    val isMetric = viewModel.sessionManager.unitSystem == "metric"
-
-    val totalDistance = remember(totalDistanceValueKm, isMetric) {
-        UnitFormatter.distance(totalDistanceValueKm, isMetric)
-    }
-
-    val avgSpeedValueKmh = remember(reportPositions, reportSummary) {
-        reportSummary?.averageSpeedKmh?.takeIf { it > 0 }
-            ?: (reportPositions.map { it.speedKmh }.average().takeIf { !it.isNaN() } ?: 32.5)
-    }
-    val avgSpeed = remember(avgSpeedValueKmh, isMetric) {
-        UnitFormatter.speed(avgSpeedValueKmh, isMetric)
-    }
-
-    val maxSpeedValueKmh = remember(reportPositions, reportSummary) {
-        reportSummary?.maxSpeedKmh?.takeIf { it > 0 }
-            ?: (reportPositions.maxOfOrNull { it.speedKmh } ?: 76.0)
-    }
-    val maxSpeed = remember(maxSpeedValueKmh, isMetric) {
-        UnitFormatter.speed(maxSpeedValueKmh, isMetric)
-    }
-
-    val spentFuelLiters = remember(totalDistanceValueKm, reportSummary) {
-        reportSummary?.spentFuel ?: (totalDistanceValueKm * 0.092)
-    }
-
-    val engineRuntime = remember(totalDistanceValueKm, avgSpeedValueKmh, reportSummary) {
-        reportSummary?.engineHoursFormatted
-            ?: "${(totalDistanceValueKm / maxOf(1.0, avgSpeedValueKmh)).toInt()}h ${(((totalDistanceValueKm / maxOf(1.0, avgSpeedValueKmh)) % 1) * 60).toInt()}m"
-    }
-
-    val speedingViolations = remember(reportPositions, reportEvents) {
-        val fromPos = reportPositions.count { it.speedKmh > 80.0 }
-        val fromEvts = reportEvents.count { it.type.contains("overspeed", ignoreCase = true) || it.type == "alarm" }
-        maxOf(fromPos, fromEvts).toString()
-    }
-
-    val geofenceBreaks = remember(reportEvents) {
-        reportEvents.count { it.type.contains("geofence", ignoreCase = true) }.toString()
-    }
-
-    val detailLogs = remember(reportPositions, reportTrips, reportEvents) {
-        val logs = mutableListOf<Pair<Long, String>>()
-
-        if (reportTrips.isNotEmpty()) {
-            reportTrips.forEach { trip ->
-                val time = try {
-                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).parse(trip.startTime ?: "")?.time ?: System.currentTimeMillis()
-                } catch (e: Exception) { System.currentTimeMillis() }
-                val start = trip.startAddress ?: "Trip Origin"
-                val end = trip.endAddress ?: "Trip Destination"
-                val dist = String.format(Locale.US, "%.1f km", trip.distanceKm)
-                val msg = "🚗 Trip: $start ➔ $end ($dist, ${trip.durationFormatted})"
-                logs.add(Pair(time, msg))
-            }
-        } else if (reportPositions.isNotEmpty()) {
-            reportPositions.forEachIndexed { index, pos ->
-                val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-                sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
-                val time = try {
-                    sdf.parse(pos.deviceTime ?: pos.fixTime ?: "")?.time ?: (System.currentTimeMillis() - (reportPositions.size - index) * 5 * 60 * 1000L)
-                } catch (e: Exception) {
-                    System.currentTimeMillis() - (reportPositions.size - index) * 5 * 60 * 1000L
-                }
-
-                val timeStr = SimpleDateFormat("HH:mm a", Locale.getDefault()).format(Date(time))
-                val dateStr = SimpleDateFormat("MMM dd", Locale.getDefault()).format(Date(time))
-                val formattedSpeed = UnitFormatter.speed(pos.speedKmh, isMetric)
-                val addressInfo = if (!pos.address.isNullOrBlank()) " near ${pos.address}" else ""
-
-                val message = if (pos.speedKmh > 80.0) {
-                    "$dateStr, $timeStr - ⚠️ SPEEDING VIOLATION: $formattedSpeed$addressInfo"
-                } else if (pos.speedKmh > 0.5) {
-                    "$dateStr, $timeStr - Moving at $formattedSpeed$addressInfo"
-                } else {
-                    "$dateStr, $timeStr - Stopped/Idling$addressInfo"
-                }
-                logs.add(Pair(time, message))
-            }
+    val totalDistance = remember(reportSummaries, reportTrips, reportRoute, isMetric, reportLoading) {
+        if (reportLoading) "--"
+        else {
+            val distKm = reportSummaries.firstOrNull()?.distanceKm
+                ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
+                ?: (reportRoute.size * 0.75)
+            UnitFormatter.distance(distKm, isMetric)
         }
+    }
 
-        reportEvents.forEach { evt ->
-            val time = try {
-                SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).parse(evt.eventTime ?: "")?.time ?: System.currentTimeMillis()
-            } catch (e: Exception) { System.currentTimeMillis() }
-            val timeStr = SimpleDateFormat("HH:mm a", Locale.getDefault()).format(Date(time))
-            val dateStr = SimpleDateFormat("MMM dd", Locale.getDefault()).format(Date(time))
-            logs.add(Pair(time, "$dateStr, $timeStr - 🔔 ALERT: ${evt.type}"))
+    val avgSpeed = remember(reportSummaries, reportRoute, isMetric, reportLoading) {
+        if (reportLoading) "--"
+        else {
+            val spdKmh = reportSummaries.firstOrNull()?.averageSpeedKmh
+                ?: (reportRoute.map { it.speedKmh }.average().takeIf { !it.isNaN() } ?: 0.0)
+            UnitFormatter.speed(spdKmh, isMetric)
         }
+    }
 
-        logs.sortByDescending { it.first }
-        logs.map { it.second }
+    val maxSpeed = remember(reportSummaries, reportRoute, isMetric, reportLoading) {
+        if (reportLoading) "--"
+        else {
+            val spdKmh = reportSummaries.firstOrNull()?.maxSpeedKmh
+                ?: (reportRoute.maxOfOrNull { it.speedKmh } ?: 0.0)
+            UnitFormatter.speed(spdKmh, isMetric)
+        }
+    }
+
+    val spentFuelLiters = remember(reportSummaries, reportTrips, reportRoute, reportLoading) {
+        if (reportLoading) 0.0
+        else {
+            val distKm = reportSummaries.firstOrNull()?.distanceKm
+                ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
+                ?: (reportRoute.size * 0.75)
+            reportSummaries.firstOrNull()?.spentFuel ?: (distKm * 0.088)
+        }
+    }
+
+    val engineRuntime = remember(reportSummaries, reportRoute, reportLoading) {
+        if (reportLoading) "--"
+        else {
+            reportSummaries.firstOrNull()?.engineHoursFormatted
+                ?: "${(reportRoute.size / 45)}h ${((reportRoute.size % 45) * 1.3).toInt()}m"
+        }
+    }
+
+    val speedingViolations = remember(reportEvents, reportRoute, reportLoading) {
+        if (reportLoading) "--"
+        else {
+            val alarms = reportEvents.count { it.type == "alarm" || it.attributes.containsKey("alarm") }
+            val speedCount = reportRoute.count { it.speedKmh > 80.0 }
+            (alarms + (speedCount / 12)).toString()
+        }
+    }
+
+    val geofenceBreaks = remember(reportEvents, reportLoading) {
+        if (reportLoading) "--"
+        else {
+            reportEvents.count { it.type.contains("geofence", ignoreCase = true) }.toString()
+        }
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // TOP HEADER ACTION BAR
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
-            }
-            Text(
-                text = if (appLanguage == "am") "ተሽከርካሪ ዝርዝር ሪፖርት" else if (appLanguage == "es") "Informe Detallado" else "Telematic Reports",
-                color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(start = 8.dp)
-            )
-        }
-
-        // DEVICE PROFILE SUMMARY CARD
+        // DEVICE PROFILE SUMMARY CARD WITH EMBEDDED BACK NAVIGATION
         Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-            border = BorderStroke(1.dp, Color(0xFF1E293B)),
+            colors = CardDefaults.cardColors(containerColor = MC.Surface1),
+            shape = RoundedCornerShape(12.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
-                modifier = Modifier.padding(14.dp),
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(44.dp)
-                        .background(Color(0xFF1E293B), CircleShape),
+                        .size(42.dp)
+                        .background(MC.Surface2, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = if (device.category?.lowercase() == "truck") Icons.Default.Place else Icons.Default.LocationOn,
                         contentDescription = null,
-                        tint = if (device.status == "online") Color(0xFF10B981) else Color(0xFFEF4444)
+                        tint = if (device.status == "online") MC.StatusOnline else MC.StatusOffline
                     )
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(device.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text("IMEI / ID: ${device.uniqueId}", color = Color.Gray, fontSize = 11.sp)
-                    Text(
+                    Text(device.name, color = MC.TextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("IMEI / ID: ${device.uniqueId}", color = MC.TextSecondary, style = MaterialTheme.typography.labelSmall)
+                    StatusBadge(
                         text = if (device.status == "online") "Active Live" else "Offline Sleep",
-                        color = if (device.status == "online") Color(0xFF10B981) else Color(0xFFEF4444),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(top = 2.dp)
+                        color = if (device.status == "online") MC.StatusOnline else MC.StatusOffline,
+                        modifier = Modifier.padding(top = 3.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(MC.Surface2, CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "Back to Fleet",
+                        tint = MC.TextPrimary,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
@@ -266,12 +227,9 @@ fun DeviceReportPage(
 
         Card(
             colors = CardDefaults.cardColors(
-                containerColor = if (isOverdue) Color(0x33EF4444) else if (isDue) Color(0x33F59E0B) else Color(0x1A10B981)
+                containerColor = if (isOverdue) MC.StatusOffline.copy(alpha = 0.15f) else if (isDue) MC.StatusIdle.copy(alpha = 0.15f) else MC.StatusOnline.copy(alpha = 0.1f)
             ),
-            border = BorderStroke(
-                width = 1.dp,
-                color = if (isOverdue) Color(0xFFFF5A5A) else if (isDue) Color(0xFFFBBF24) else Color(0xFF10B981)
-            ),
+            shape = RoundedCornerShape(10.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -281,21 +239,20 @@ fun DeviceReportPage(
                 Icon(
                     imageVector = Icons.Default.Build,
                     contentDescription = "Maintenance reminder",
-                    tint = if (isOverdue) Color(0xFFF87171) else if (isDue) Color(0xFFFBBF24) else Color(0xFF34D399),
+                    tint = if (isOverdue) MC.StatusOffline else if (isDue) MC.StatusIdle else MC.StatusOnline,
                     modifier = Modifier.size(24.dp)
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
                     Text(
-                        text = if (isOverdue) "ENGINE MAINTENANCE OVERDUE! ⚠️" else if (isDue) "ENGINE MAINTENANCE REQUIRED SOON 🔧" else "ENGINE SYSTEM OPTIMAL 🟢",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        color = if (isOverdue) Color(0xFFFF8585) else if (isDue) Color(0xFFFBBF24) else Color(0xFF34D399)
+                        text = if (isOverdue) "Engine Maintenance Overdue" else if (isDue) "Engine Maintenance Required Soon" else "Engine System Optimal",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (isOverdue) MC.StatusOffline else if (isDue) MC.StatusIdle else MC.StatusOnline
                     )
                     Text(
                         text = "Current Odometer: ${String.format("%.1f", odoKm)} km (Limit: 5,000 km interval)",
-                        color = Color.LightGray,
-                        fontSize = 11.sp,
+                        color = MC.TextSecondary,
+                        style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(top = 2.dp)
                     )
                 }
@@ -309,31 +266,33 @@ fun DeviceReportPage(
         ) {
             Button(
                 onClick = onViewOnMap,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                colors = ButtonDefaults.buttonColors(containerColor = MC.AccentPrimary),
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(8.dp)
             ) {
-                Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.LocationOn, contentDescription = null, tint = MC.TextPrimary, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = if (appLanguage == "am") "ካርታ ላይ አሳይ" else if (appLanguage == "es") "Ver en Mapa" else "Live Map",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MC.TextPrimary
                 )
             }
 
             Button(
                 onClick = onViewPlayback,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569)),
+                colors = ButtonDefaults.buttonColors(containerColor = MC.Surface2),
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(8.dp)
             ) {
-                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MC.TextPrimary, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = if (appLanguage == "am") "ታሪክ አጫውት" else if (appLanguage == "es") "Ver Playback" else "Playback",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MC.TextPrimary
                 )
             }
         }
@@ -342,7 +301,7 @@ fun DeviceReportPage(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF0F172A), RoundedCornerShape(10.dp))
+                .background(MC.Surface1, RoundedCornerShape(10.dp))
                 .padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -350,9 +309,9 @@ fun DeviceReportPage(
             options.forEach { opt ->
                 val isSelected = reportTimeframe == opt
                 val amLabel = when(opt) {
-                    "Weekly" -> "ሳምንታዊ (Weekly)"
-                    "Monthly" -> "ወርሃዊ (Monthly)"
-                    else -> "ዛሬ (Today)"
+                    "Weekly" -> "ሳምንታዊ"
+                    "Monthly" -> "ወርሃዊ"
+                    else -> "ዛሬ"
                 }
                 val esLabel = when(opt) {
                     "Weekly" -> "Semanal"
@@ -365,24 +324,35 @@ fun DeviceReportPage(
                     modifier = Modifier
                         .weight(1f)
                         .background(
-                            if (isSelected) Color(0xFF10B981) else Color.Transparent,
+                            if (isSelected) MC.AccentPrimary else Color.Transparent,
                             RoundedCornerShape(8.dp)
                         )
-                        .clickable { reportTimeframe = opt }
+                        .clickable {
+                            if (reportTimeframe != opt) {
+                                // Immediately clear old data to avoid stale presentation
+                                reportRoute = emptyList()
+                                reportTrips = emptyList()
+                                reportStops = emptyList()
+                                reportSummaries = emptyList()
+                                reportEvents = emptyList()
+                                reportLoading = true
+                                reportTimeframe = opt
+                            }
+                        }
                         .padding(vertical = 8.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = displayLabel,
-                        color = if (isSelected) Color.White else Color.Gray,
+                        color = if (isSelected) MC.TextPrimary else MC.TextSecondary,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                        fontSize = 12.sp
+                        style = MaterialTheme.typography.labelSmall
                     )
                 }
             }
         }
 
-        // SUB-TABS (Overview, Trips, Stops, Events, Breadcrumbs)
+        // SUB-TABS (Overview, Trips, Stops, Safety)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -390,21 +360,25 @@ fun DeviceReportPage(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             listOf(
-                "Overview" to "📊 Overview",
-                "Trips" to "🚗 Trips (${reportTrips.size})",
-                "Stops" to "🛑 Stops (${reportStops.size})",
-                "Safety" to "⚠️ Safety & Events",
-                "Route" to "📍 Route Coordinates (${reportPositions.size})"
+                "Overview" to "Overview",
+                "Trips" to "Trips (${reportTrips.size})",
+                "Stops" to "Stops (${reportStops.size})",
+                "Safety" to "Safety & Events"
             ).forEach { (tabKey, tabLabel) ->
                 val active = activeSubTab == tabKey
-                Box(
-                    modifier = Modifier
-                        .background(if (active) Color(0xFF3B82F6) else Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                        .clickable { activeSubTab = tabKey }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Text(tabLabel, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                }
+                FilterChip(
+                    selected = active,
+                    onClick = { activeSubTab = tabKey },
+                    label = { Text(tabLabel, style = MaterialTheme.typography.labelSmall, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MC.AccentPrimary,
+                        selectedLabelColor = MC.TextPrimary,
+                        containerColor = MC.Surface2,
+                        labelColor = MC.TextSecondary
+                    ),
+                    border = null,
+                    shape = RoundedCornerShape(8.dp)
+                )
             }
         }
 
@@ -415,13 +389,30 @@ fun DeviceReportPage(
         ) {
             if (reportLoading) {
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MC.Surface1),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                     ) {
-                        CircularProgressIndicator(color = Color(0xFF10B981))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = MC.AccentPrimary,
+                                strokeWidth = 2.5.dp
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = if (appLanguage == "am") "የ${reportTimeframe} ሪፖርት መረጃዎችን በማምጣት ላይ..." else "Fetching $reportTimeframe telemetry report data...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MC.TextPrimary
+                            )
+                        }
                     }
                 }
             }
@@ -434,19 +425,19 @@ fun DeviceReportPage(
                     MetricBox(
                         title = if (appLanguage == "am") "ጠቅላላ ርቀት" else "Total Distance",
                         value = totalDistance,
-                        color = Color(0xFF3B82F6),
+                        color = MC.AccentPrimary,
                         modifier = Modifier.weight(1f)
                     )
                     MetricBox(
                         title = if (appLanguage == "am") "የተቃጠለ ነዳጅ" else "Fuel Spent",
                         value = String.format(Locale.US, "%.1f L", spentFuelLiters),
-                        color = Color(0xFF10B981),
+                        color = MC.StatusOnline,
                         modifier = Modifier.weight(1f)
                     )
                     MetricBox(
                         title = if (appLanguage == "am") "የሞተር ሰዓት" else "Engine Runtime",
                         value = engineRuntime,
-                        color = Color(0xFF8B5CF6),
+                        color = MC.AccentPrimary,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -460,19 +451,19 @@ fun DeviceReportPage(
                     MetricBox(
                         title = if (appLanguage == "am") "አማካይ ፍጥነት" else "Avg Speed",
                         value = avgSpeed,
-                        color = Color(0xFF06B6D4),
+                        color = MC.StatusIdle,
                         modifier = Modifier.weight(1f)
                     )
                     MetricBox(
                         title = if (appLanguage == "am") "ከፍተኛ ፍጥነት" else "Max Speed",
                         value = maxSpeed,
-                        color = Color(0xFFF59E0B),
+                        color = MC.StatusIdle,
                         modifier = Modifier.weight(1f)
                     )
                     MetricBox(
                         title = if (appLanguage == "am") "ፍጥነት ማለፍ" else "Violations",
                         value = speedingViolations,
-                        color = if ((speedingViolations.toIntOrNull() ?: 0) > 0) Color(0xFFEF4444) else Color(0xFF10B981),
+                        color = if ((speedingViolations.toIntOrNull() ?: 0) > 0) MC.StatusOffline else MC.StatusOnline,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -493,7 +484,7 @@ fun DeviceReportPage(
                                 appendLine("Device Name : ${device.name}")
                                 appendLine("IMEI        : ${device.uniqueId}")
                                 appendLine("Report Type : $activeLabel")
-                                appendLine("Generated   : ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
+                                appendLine("Generated   : ${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())}")
                                 appendLine("-----------------------------------------")
                                 appendLine("TELEMETRICS SUMMARY:")
                                 appendLine(" • Distance: $totalDistance")
@@ -509,12 +500,11 @@ fun DeviceReportPage(
                                 if (reportTrips.isNotEmpty()) {
                                     appendLine("TRIP BREAKDOWNS:")
                                     reportTrips.forEachIndexed { i, trip ->
-                                        appendLine(" Trip #${i + 1}: ${trip.startAddress ?: "Origin"} ➔ ${trip.endAddress ?: "Destination"}")
+                                        appendLine(" Trip #${i + 1} (${trip.timeRangeFormatted}): ${trip.startAddress ?: "Origin"} -> ${trip.endAddress ?: "Destination"}")
                                         appendLine("   Duration: ${trip.durationFormatted} | Distance: ${String.format(Locale.US, "%.1f km", trip.distanceKm)} | Driver: ${trip.driverName ?: "N/A"}")
                                     }
                                 }
                                 appendLine("=========================================")
-                                appendLine("Mighty GPS - Automated Telematics Protocol Sheet")
                             }
 
                             val sendIntent = Intent().apply {
@@ -526,7 +516,7 @@ fun DeviceReportPage(
                             }
                             context.startActivity(Intent.createChooser(sendIntent, "Export Telematic Report"))
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569)),
+                        colors = ButtonDefaults.buttonColors(containerColor = MC.Surface2),
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = PaddingValues(vertical = 8.dp)
@@ -534,26 +524,21 @@ fun DeviceReportPage(
                         Icon(
                             Icons.Default.Share,
                             contentDescription = "Share text report",
-                            tint = Color.White,
+                            tint = MC.TextPrimary,
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (appLanguage == "am") "ጽሑፍ አጋራ" else if (appLanguage == "es") "Compartir Texto" else "Share Text",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp
+                            color = MC.TextPrimary,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
                         )
                     }
 
                     Button(
                         onClick = {
                             coroutineScope.launch {
-                                val detailLogStrings = if (reportTrips.isNotEmpty()) {
-                                    reportTrips.map { "Trip: ${it.startAddress ?: "Depot"} ➔ ${it.endAddress ?: "Destination"} (${String.format(Locale.US, "%.1f km", it.distanceKm)}, ${it.durationFormatted})" }
-                                } else {
-                                    detailLogs
-                                }
                                 val pdfFile = withContext(Dispatchers.Default) {
                                     generatePdfReport(
                                         context = context,
@@ -562,9 +547,13 @@ fun DeviceReportPage(
                                         totalDistance = totalDistance,
                                         avgSpeed = avgSpeed,
                                         maxSpeed = maxSpeed,
+                                        spentFuel = String.format(Locale.US, "%.1f L", spentFuelLiters),
+                                        engineHours = engineRuntime,
                                         speedingViolations = speedingViolations,
                                         geofenceBreaks = geofenceBreaks,
-                                        detailLogs = detailLogStrings
+                                        trips = reportTrips,
+                                        stops = reportStops,
+                                        events = reportEvents
                                     )
                                 }
                                 if (pdfFile != null) {
@@ -572,7 +561,7 @@ fun DeviceReportPage(
                                 }
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                        colors = ButtonDefaults.buttonColors(containerColor = MC.StatusOnline),
                         modifier = Modifier.weight(1.2f),
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = PaddingValues(vertical = 8.dp)
@@ -580,15 +569,15 @@ fun DeviceReportPage(
                         Icon(
                             Icons.Default.List,
                             contentDescription = "Export PDF report",
-                            tint = Color.White,
+                            tint = MC.TextPrimary,
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (appLanguage == "am") "PDF አውርድ (Export)" else if (appLanguage == "es") "Exportar PDF" else "Export PDF Report",
-                            color = Color.White,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 11.sp
+                            text = if (appLanguage == "am") "PDF አውርድ" else if (appLanguage == "es") "Exportar PDF" else "Export PDF",
+                            color = MC.TextPrimary,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
@@ -596,136 +585,287 @@ fun DeviceReportPage(
 
             when (activeSubTab) {
                 "Trips" -> {
+                    val displayTrips = reportTrips.take(10)
                     item {
-                        Text(
-                            text = "Trips Log (${reportTrips.size} Trips Completed)",
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Trips Log (${reportTrips.size} Total)",
+                                color = MC.TextPrimary,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (reportTrips.size > 10) {
+                                Text(
+                                    text = "Showing 10 recent",
+                                    color = MC.AccentPrimary,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
                     }
                     if (reportTrips.isEmpty()) {
                         item {
-                            Card(colors = CardDefaults.cardColors(containerColor = Color(0x331E293B)), modifier = Modifier.fillMaxWidth()) {
-                                Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                                    Text("No trips logged for $reportTimeframe.", color = Color.Gray, fontSize = 12.sp)
+                            Card(colors = CardDefaults.cardColors(containerColor = MC.Surface1), modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                Box(modifier = Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                                    Text("No trips logged for $reportTimeframe.", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
                         }
                     } else {
-                        items(reportTrips) { trip ->
-                            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
-                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text("Trip: ${trip.durationFormatted}", color = Color(0xFF60A5FA), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                        Text(UnitFormatter.distance(trip.distanceKm, isMetric), color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        items(displayTrips) { trip ->
+                            val idx = reportTrips.indexOf(trip)
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MC.Surface1),
+                                shape = RoundedCornerShape(8.dp),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 0.5.dp),
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                                ) {
+                                    // Row 1: Header + Metrics
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Trip #${if (idx >= 0) idx + 1 else 1} • ${trip.durationFormatted}",
+                                            color = MC.AccentPrimary,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "${UnitFormatter.distance(trip.distanceKm, isMetric)} (${UnitFormatter.speed(trip.averageSpeedKmh, isMetric)})",
+                                            color = MC.StatusOnline,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
                                     }
-                                    Text("From: ${trip.startAddress ?: "Origin"}", color = Color.LightGray, fontSize = 11.sp)
-                                    Text("To: ${trip.endAddress ?: "Destination"}", color = Color.LightGray, fontSize = 11.sp)
-                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text("Avg: ${UnitFormatter.speed(trip.averageSpeedKmh, isMetric)}", color = Color.Gray, fontSize = 10.sp)
-                                        trip.driverName?.let { Text("Driver: $it", color = Color(0xFFF59E0B), fontSize = 10.sp) }
+
+                                    // Row 2: Origin Location & Time
+                                    Text(
+                                        text = "From: ${trip.startAddress ?: "Origin Terminal"} (${trip.startTimeFormatted})",
+                                        color = MC.TextPrimary,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1
+                                    )
+
+                                    // Row 3: Destination Location & Time
+                                    Text(
+                                        text = "To: ${trip.endAddress ?: "Destination Facility"} (${trip.endTimeFormatted})",
+                                        color = MC.TextPrimary,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1
+                                    )
+
+                                    trip.driverName?.let {
+                                        Text(
+                                            text = "Driver: $it",
+                                            color = MC.StatusIdle,
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
                                     }
+                                }
+                            }
+                        }
+
+                        if (reportTrips.size > 10) {
+                            item {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MC.Surface2),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "Showing 10 of ${reportTrips.size} trips. Full trip logs available in Export PDF.",
+                                        color = MC.TextSecondary,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                    )
                                 }
                             }
                         }
                     }
                 }
                 "Stops" -> {
+                    val displayStops = reportStops.take(10)
                     item {
-                        Text(
-                            text = "Stops Log (${reportStops.size} Stops Logged)",
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Stops Log (${reportStops.size} Total)",
+                                color = MC.TextPrimary,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (reportStops.size > 10) {
+                                Text(
+                                    text = "Showing 10 recent",
+                                    color = MC.AccentPrimary,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
                     }
                     if (reportStops.isEmpty()) {
                         item {
-                            Card(colors = CardDefaults.cardColors(containerColor = Color(0x331E293B)), modifier = Modifier.fillMaxWidth()) {
-                                Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                                    Text("No parking or idling stops logged for $reportTimeframe.", color = Color.Gray, fontSize = 12.sp)
+                            Card(colors = CardDefaults.cardColors(containerColor = MC.Surface1), modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                Box(modifier = Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                                    Text("No parking or idling stops logged for $reportTimeframe.", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
                         }
                     } else {
-                        items(reportStops) { stop ->
-                            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
-                                Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(displayStops) { stop ->
+                            val idx = reportStops.indexOf(stop)
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MC.Surface1),
+                                shape = RoundedCornerShape(8.dp),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 0.5.dp),
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
                                             Text(
-                                                text = if (stop.wasIdling) "⚠️ Engine Idling" else "🅿️ Parked",
-                                                color = if (stop.wasIdling) Color(0xFFEF4444) else Color(0xFF10B981),
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 11.sp
+                                                text = if (stop.wasIdling) "Engine Idling" else "Parked",
+                                                color = if (stop.wasIdling) MC.StatusIdle else MC.StatusOnline,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold
                                             )
-                                            if (stop.wasIdling) {
-                                                Text("(Fuel burning)", color = Color(0xFFFCA5A5), fontSize = 10.sp)
-                                            }
+                                            Text(
+                                                text = "Stop #${if (idx >= 0) idx + 1 else 1}",
+                                                color = MC.TextSecondary,
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
                                         }
-                                        Text(stop.address ?: "Staging Facility", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                        Text("Time: ${stop.startTime ?: "N/A"}", color = Color.Gray, fontSize = 10.sp)
+                                        Text(
+                                            text = stop.durationFormatted,
+                                            color = MC.StatusIdle,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
                                     }
-                                    Text(stop.durationFormatted, color = Color(0xFFF59E0B), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+
+                                    Text(
+                                        text = stop.address ?: "Facility Staging Area",
+                                        color = MC.TextPrimary,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1
+                                    )
+                                    Text(
+                                        text = stop.timeRangeFormatted,
+                                        color = MC.TextTertiary,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                        }
+
+                        if (reportStops.size > 10) {
+                            item {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MC.Surface2),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "Showing 10 of ${reportStops.size} stops. Full stops log available in Export PDF.",
+                                        color = MC.TextSecondary,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                    )
                                 }
                             }
                         }
                     }
                 }
                 "Safety" -> {
+                    val displayEvents = reportEvents.take(10)
                     item {
-                        Text(
-                            text = "Safety & Alarms History",
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Safety Alarms (${reportEvents.size} Total)",
+                                color = MC.TextPrimary,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (reportEvents.size > 10) {
+                                Text(
+                                    text = "Showing 10 recent",
+                                    color = MC.AccentPrimary,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
                     }
                     if (reportEvents.isEmpty()) {
                         item {
-                            Card(colors = CardDefaults.cardColors(containerColor = Color(0x331E293B)), modifier = Modifier.fillMaxWidth()) {
-                                Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                                    Text("No safety violations or geofence breaches for this period! 🟢", color = Color(0xFF10B981), fontSize = 12.sp)
+                            Card(colors = CardDefaults.cardColors(containerColor = MC.Surface1), modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                Box(modifier = Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                                    Text("No safety violations or geofence breaches for this period.", color = MC.StatusOnline, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
                         }
                     } else {
-                        items(reportEvents) { evt ->
-                            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
-                                Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column {
-                                        Text(evt.type, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                        Text(evt.eventTime ?: "", color = Color.Gray, fontSize = 10.sp)
+                        items(displayEvents) { evt ->
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MC.Surface1),
+                                shape = RoundedCornerShape(8.dp),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 0.5.dp),
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.Warning, contentDescription = null, tint = MC.StatusOffline, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(evt.type, color = MC.TextPrimary, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                        Text(evt.eventTimeFormatted, color = MC.TextTertiary, style = MaterialTheme.typography.labelSmall)
                                     }
                                 }
                             }
                         }
-                    }
-                }
-                "Route" -> {
-                    item {
-                        Text(
-                            text = "GPS Route Breadcrumbs (${reportPositions.size} Points)",
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-                    }
-                    items(reportPositions.take(20)) { pos ->
-                        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF070B19)), modifier = Modifier.fillMaxWidth()) {
-                            Row(modifier = Modifier.padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Column {
-                                    Text(pos.deviceTime ?: "", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    Text("${pos.latitude}, ${pos.longitude}", color = Color.Gray, fontSize = 10.sp)
+
+                        if (reportEvents.size > 10) {
+                            item {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MC.Surface2),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "Showing 10 of ${reportEvents.size} alerts. Full alerts history available in Export PDF.",
+                                        color = MC.TextSecondary,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                    )
                                 }
-                                Text(UnitFormatter.speed(pos.speedKmh, isMetric), color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
                         }
                     }
@@ -733,59 +873,111 @@ fun DeviceReportPage(
                 else -> {
                     item {
                         Text(
-                            text = if (appLanguage == "am") "የተሽከርካሪ ጉዞዎች እና ታሪካዊ ክንውኖች" else if (appLanguage == "es") "Historial de Eventos" else "Trip Milestones & Log Events",
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                            text = if (appLanguage == "am") "አጠቃላይ የቴሌማቲክስ ማጠቃለያ" else if (appLanguage == "es") "Resumen Ejecutivo" else "Executive Telematics Summary",
+                            color = MC.TextPrimary,
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(top = 6.dp)
                         )
                     }
 
-                    if (detailLogs.isEmpty()) {
-                        item {
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0x331E293B)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
-                                    contentAlignment = Alignment.Center
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MC.Surface1),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    Text("Fleet Asset", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                    Text(device.name, color = MC.TextPrimary, style = MaterialTheme.typography.titleSmall)
+                                }
+                                HorizontalDivider(color = MC.Surface3)
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Logged Trips", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                    Text("${reportTrips.size} completed", color = MC.AccentPrimary, style = MaterialTheme.typography.titleSmall)
+                                }
+                                HorizontalDivider(color = MC.Surface3)
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Stops & Parked Periods", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                    Text("${reportStops.size} logged", color = MC.StatusOnline, style = MaterialTheme.typography.titleSmall)
+                                }
+                                HorizontalDivider(color = MC.Surface3)
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Safety Alerts & Geofences", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
                                     Text(
-                                        text = if (appLanguage == "am") "ምንም የጉዞ ታሪክ አልተገኘም" else if (appLanguage == "es") "No hay registros de viaje" else "No telemetry reports or log events recorded for this period.",
-                                        color = Color.Gray,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                        "${reportEvents.size} alerts",
+                                        color = if (reportEvents.isNotEmpty()) MC.StatusOffline else MC.StatusOnline,
+                                        style = MaterialTheme.typography.titleSmall
                                     )
                                 }
                             }
                         }
-                    } else {
-                        items(detailLogs) { log ->
+                    }
+
+                    if (reportTrips.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = if (appLanguage == "am") "የቅርብ ጊዜ ጉዞ ማጠቃለያ" else "Recent Trip Highlight",
+                                color = MC.TextPrimary,
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.padding(top = 6.dp)
+                            )
+                        }
+                        val latestTrip = reportTrips.first()
+                        item {
                             Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                                colors = CardDefaults.cardColors(containerColor = MC.Surface2),
+                                shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(8.dp)
-                                            .background(Color(0xFF3B82F6), CircleShape)
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Text(
-                                        text = log,
-                                        color = Color.LightGray,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
+                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text("${latestTrip.startAddress ?: "Origin"} -> ${latestTrip.endAddress ?: "Destination"}", color = MC.TextPrimary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                                        Text(latestTrip.durationFormatted, color = MC.StatusOnline, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    }
+                                    Text("Distance: ${UnitFormatter.distance(latestTrip.distanceKm, isMetric)} • Avg Speed: ${UnitFormatter.speed(latestTrip.averageSpeedKmh, isMetric)}", color = MC.TextSecondary, style = MaterialTheme.typography.labelSmall)
                                 }
+                            }
+                        }
+                    }
+
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MC.Surface2),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Info, contentDescription = null, tint = MC.AccentPrimary, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (appLanguage == "am") "ዝርዝር የጉዞ፣ የማቆሚያ እና የደህንነት መዛግብት ከላይ ባሉት ንዑስ ክፍሎች ይገኛሉ። ሙሉውን ሪፖርት በፒዲኤፍ ማውረድ ይችላሉ።"
+                                    else "Detailed trips, idle stops, and security events are neatly organized under the tabs above. Tap 'Export PDF' to export the complete itemized dossier.",
+                                    color = MC.TextSecondary,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
                             }
                         }
                     }

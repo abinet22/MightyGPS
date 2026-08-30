@@ -122,13 +122,13 @@ fun CrashReportScreen(
                         Text(
                             text = "Diagnostic & Error Logger",
                             color = Color.White,
-                            fontSize = 18.sp,
+                            style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
                             text = "Copy this log and paste into AI Studio to fix",
                             color = Color(0xFF94A3B8),
-                            fontSize = 12.sp
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
                 },
@@ -177,12 +177,12 @@ fun CrashReportScreen(
                             text = "App Intercepted an Error",
                             color = Color.White,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
+                            style = MaterialTheme.typography.titleMedium
                         )
                         Text(
                             text = "Click the copy button below and paste the exact text into your AI Studio chat.",
                             color = Color(0xFFFCA5A5),
-                            fontSize = 12.sp
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
                 }
@@ -208,7 +208,7 @@ fun CrashReportScreen(
                 Text(
                     text = if (isCopied) "COPIED TO CLIPBOARD! PASTE IN CHAT" else "COPY ERROR LOGS TO CLIPBOARD",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
+                    style = MaterialTheme.typography.titleMedium,
                     color = Color.White
                 )
             }
@@ -235,8 +235,7 @@ fun CrashReportScreen(
                         text = crashLog,
                         color = Color(0xFFE2E8F0),
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
@@ -259,7 +258,7 @@ fun CrashReportScreen(
                 ) {
                     Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Clear & Reset", fontSize = 12.sp)
+                    Text("Clear & Reset", style = MaterialTheme.typography.bodySmall)
                 }
 
                 Button(
@@ -270,7 +269,7 @@ fun CrashReportScreen(
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Restart App", fontSize = 12.sp, color = Color.White)
+                    Text("Restart App", style = MaterialTheme.typography.bodySmall, color = Color.White)
                 }
             }
         }

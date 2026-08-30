@@ -217,9 +217,9 @@ fun PlaybackTab(
                     ?: cachedDevices.find { it.id == playbackSelectedDeviceId }?.name
                     ?: "Select Device"
                 Column {
-                    Text("Route Playback", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text("Route Playback", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     if (playbackSelectedDeviceId != null) {
-                        Text(currentDeviceName, color = Color(0xFF60A5FA), fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                        Text(currentDeviceName, color = Color(0xFF60A5FA), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
                     }
                 }
             }
@@ -240,7 +240,7 @@ fun PlaybackTab(
                             tint = Color.White
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(if (isQueryConfigExpanded) "Close" else "Filter", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                        Text(if (isQueryConfigExpanded) "Close" else "Filter", style = MaterialTheme.typography.labelSmall, color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -270,7 +270,7 @@ fun PlaybackTab(
                     Text(
                         text = rangeLabel,
                         color = Color(0xFF10B981),
-                        fontSize = 11.sp,
+                        style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Medium
                     )
 
@@ -284,7 +284,7 @@ fun PlaybackTab(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(10.dp), tint = Color.White)
                             Spacer(modifier = Modifier.width(3.dp))
-                            Text("Change", fontSize = 9.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                            Text("Change", style = MaterialTheme.typography.labelSmall, color = Color.White, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -309,7 +309,7 @@ fun PlaybackTab(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFF3B82F6), modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Historical Playback Query", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("Historical Playback Query", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                         }
                         if (routeHistory.isNotEmpty()) {
                             IconButton(
@@ -332,7 +332,7 @@ fun PlaybackTab(
                             OutlinedTextField(
                                 value = playbackDeviceSearch,
                                 onValueChange = { playbackDeviceSearch = it },
-                                placeholder = { Text("Filter devices...", fontSize = 10.sp, color = Color.Gray) },
+                                placeholder = { Text("Filter devices...", style = MaterialTheme.typography.labelSmall, color = Color.Gray) },
                                 singleLine = true,
                                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF3B82F6), modifier = Modifier.size(14.dp)) },
                                 trailingIcon = {
@@ -405,10 +405,10 @@ fun PlaybackTab(
                                                     .clip(CircleShape)
                                                     .background(if (dev.status == "online") Color(0xFF10B981) else Color(0xFF94A3B8))
                                             )
-                                            Column {
+                                             Column {
                                                 Text(
                                                     text = dev.name,
-                                                    fontSize = 11.sp,
+                                                    style = MaterialTheme.typography.bodySmall,
                                                     fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Bold,
                                                     color = Color.White,
                                                     maxLines = 1,
@@ -418,7 +418,7 @@ fun PlaybackTab(
                                                 if (!plateOrModel.isNullOrBlank()) {
                                                     Text(
                                                         text = plateOrModel,
-                                                        fontSize = 9.sp,
+                                                        style = MaterialTheme.typography.labelSmall,
                                                         color = if (isSelected) Color(0xFFE0F2FE) else Color(0xFF60A5FA),
                                                         fontWeight = FontWeight.SemiBold,
                                                         maxLines = 1,
@@ -441,7 +441,7 @@ fun PlaybackTab(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Period Mode:", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Text("Period Mode:", color = Color.Gray, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                         Row(
                             modifier = Modifier
                                 .background(Color(0xFF1E293B), RoundedCornerShape(12.dp))
@@ -454,7 +454,7 @@ fun PlaybackTab(
                                     .clickable { onSetPlaybackRangeMode("Predefined") }
                                     .padding(horizontal = 8.dp, vertical = 3.dp)
                             ) {
-                                Text("Quick", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                Text("Quick", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                             }
                             Box(
                                 modifier = Modifier
@@ -463,7 +463,7 @@ fun PlaybackTab(
                                     .clickable { onSetPlaybackRangeMode("Custom") }
                                     .padding(horizontal = 8.dp, vertical = 3.dp)
                             ) {
-                                Text("Custom", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                Text("Custom", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -487,7 +487,7 @@ fun PlaybackTab(
                                         .padding(vertical = 4.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text(range, color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                    Text(range, color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -498,7 +498,7 @@ fun PlaybackTab(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("From:", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Text("From:", color = Color.Gray, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Button(
                                     onClick = { selectDate(true) },
@@ -507,7 +507,7 @@ fun PlaybackTab(
                                     modifier = Modifier.height(24.dp),
                                     shape = RoundedCornerShape(4.dp)
                                 ) {
-                                    Text(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(customStartCalendar.time), fontSize = 9.sp, color = Color.White)
+                                    Text(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(customStartCalendar.time), style = MaterialTheme.typography.labelSmall, color = Color.White)
                                 }
                                 Button(
                                     onClick = { selectTime(true) },
@@ -516,7 +516,7 @@ fun PlaybackTab(
                                     modifier = Modifier.height(24.dp),
                                     shape = RoundedCornerShape(4.dp)
                                 ) {
-                                    Text(SimpleDateFormat("HH:mm", Locale.US).format(customStartCalendar.time), fontSize = 9.sp, color = Color.White)
+                                    Text(SimpleDateFormat("HH:mm", Locale.US).format(customStartCalendar.time), style = MaterialTheme.typography.labelSmall, color = Color.White)
                                 }
                             }
                         }
@@ -525,7 +525,7 @@ fun PlaybackTab(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("To:", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Text("To:", color = Color.Gray, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Button(
                                     onClick = { selectDate(false) },
@@ -534,7 +534,7 @@ fun PlaybackTab(
                                     modifier = Modifier.height(24.dp),
                                     shape = RoundedCornerShape(4.dp)
                                 ) {
-                                    Text(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(customEndCalendar.time), fontSize = 9.sp, color = Color.White)
+                                    Text(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(customEndCalendar.time), style = MaterialTheme.typography.labelSmall, color = Color.White)
                                 }
                                 Button(
                                     onClick = { selectTime(false) },
@@ -543,7 +543,7 @@ fun PlaybackTab(
                                     modifier = Modifier.height(24.dp),
                                     shape = RoundedCornerShape(4.dp)
                                 ) {
-                                    Text(SimpleDateFormat("HH:mm", Locale.US).format(customEndCalendar.time), fontSize = 9.sp, color = Color.White)
+                                    Text(SimpleDateFormat("HH:mm", Locale.US).format(customEndCalendar.time), style = MaterialTheme.typography.labelSmall, color = Color.White)
                                 }
                             }
                         }
@@ -603,7 +603,7 @@ fun PlaybackTab(
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
                                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(13.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Fetch & Stream Route History", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("Fetch & Stream Route History", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -720,7 +720,7 @@ fun PlaybackTab(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.ZoomIn, contentDescription = "Max Zoom", tint = Color.White, modifier = Modifier.size(11.dp))
                                 Spacer(modifier = Modifier.width(3.dp))
-                                Text("Max Zoom", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                Text("Max Zoom", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                             }
                         }
 
@@ -742,7 +742,7 @@ fun PlaybackTab(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.ZoomOutMap, contentDescription = "Fit Route", tint = Color(0xFF60A5FA), modifier = Modifier.size(11.dp))
                                 Spacer(modifier = Modifier.width(3.dp))
-                                Text("Fit Trail", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                Text("Fit Trail", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                             }
                         }
 
@@ -756,7 +756,7 @@ fun PlaybackTab(
                             Text(
                                 text = if (isCameraFollowLocked) "Cam Locked" else "Cam Free",
                                 color = Color.White,
-                                fontSize = 9.sp,
+                                style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -824,7 +824,7 @@ fun PlaybackTab(
                                 Text(
                                     text = formattedTime,
                                     color = Color.White,
-                                    fontSize = 11.sp,
+                                    style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.ExtraBold
                                 )
 
@@ -833,7 +833,7 @@ fun PlaybackTab(
                                 Text(
                                     text = "Crumb ${playbackStepIndex + 1}/${routeHistory.size} • Distance: ${UnitFormatter.distance(totalDist, isMetric)}",
                                     color = Color.Gray,
-                                    fontSize = 9.5.sp
+                                    style = MaterialTheme.typography.labelSmall
                                 )
                             }
 
@@ -845,7 +845,7 @@ fun PlaybackTab(
                                     Text(
                                         text = UnitFormatter.speed(currentPoint.speedKmh, isMetric),
                                         color = Color(0xFF10B981),
-                                        fontSize = 10.5.sp,
+                                        style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.ExtraBold,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
@@ -856,7 +856,7 @@ fun PlaybackTab(
                                     Text(
                                         text = UnitFormatter.altitude(currentPoint.altitude, isMetric),
                                         color = Color(0xFF3B82F6),
-                                        fontSize = 10.5.sp,
+                                        style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.ExtraBold,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
@@ -977,7 +977,7 @@ fun PlaybackTab(
                             ) {
                                 listOf(1, 2, 5, 10, 20, 50).forEach { s ->
                                     val active = playbackSpeedMultiplier == s
-                                    Box(
+                                     Box(
                                         modifier = Modifier
                                             .background(
                                                 color = if (active) Color(0xFF10B981) else Color(0xFF1E293B),
@@ -986,7 +986,7 @@ fun PlaybackTab(
                                             .clickable { onSetPlaybackSpeedMultiplier(s) }
                                             .padding(horizontal = 5.dp, vertical = 2.dp)
                                     ) {
-                                        Text("${s}x", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                        Text("${s}x", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -1018,9 +1018,9 @@ fun PlaybackTab(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFF3B82F6), modifier = Modifier.size(13.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Speed Profile", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("Speed Profile", color = Color.White, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
                             }
-                            Text("${routeHistory.size} telemetry crumbs", color = Color.Gray, fontSize = 9.sp)
+                            Text("${routeHistory.size} telemetry crumbs", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                         }
 
                         Row(
@@ -1029,20 +1029,20 @@ fun PlaybackTab(
                         ) {
                             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.weight(1f)) {
                                 Column(modifier = Modifier.padding(6.dp)) {
-                                    Text("MAX SPEED", color = Color.Gray, fontSize = 8.sp, fontWeight = FontWeight.Bold)
-                                    Text("${String.format("%.1f", maxSpd)} km/h", color = Color(0xFFEF4444), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                    Text("MAX SPEED", color = Color.Gray, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    Text("${String.format("%.1f", maxSpd)} km/h", color = Color(0xFFEF4444), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold)
                                 }
                             }
                             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.weight(1f)) {
                                 Column(modifier = Modifier.padding(6.dp)) {
-                                    Text("AVG SPEED", color = Color.Gray, fontSize = 8.sp, fontWeight = FontWeight.Bold)
-                                    Text("${String.format("%.1f", avgSpd)} km/h", color = Color(0xFF10B981), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                    Text("AVG SPEED", color = Color.Gray, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    Text("${String.format("%.1f", avgSpd)} km/h", color = Color(0xFF10B981), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold)
                                 }
                             }
                             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.weight(1f)) {
                                 Column(modifier = Modifier.padding(6.dp)) {
-                                    Text("IDLE / STOPPED", color = Color.Gray, fontSize = 8.sp, fontWeight = FontWeight.Bold)
-                                    Text("$stoppedCount pts", color = Color(0xFFF59E0B), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                    Text("IDLE / STOPPED", color = Color.Gray, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    Text("$stoppedCount pts", color = Color(0xFFF59E0B), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold)
                                 }
                             }
                         }
@@ -1052,7 +1052,7 @@ fun PlaybackTab(
                                 Row(modifier = Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(13.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Speeding events detected (>80 km/h): $highSpeedCount crumbs recorded.", color = Color(0xFFFCA5A5), fontSize = 9.5.sp)
+                                    Text("Speeding events detected (>80 km/h): $highSpeedCount crumbs recorded.", color = Color(0xFFFCA5A5), style = MaterialTheme.typography.labelSmall)
                                 }
                             }
                         }
@@ -1064,7 +1064,7 @@ fun PlaybackTab(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
-                Text("No telemetry history currently loaded. Tap 'Query' above.", color = Color.Gray, fontSize = 11.sp)
+                Text("No telemetry history currently loaded. Tap 'Query' above.", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
             }
         }
     }

@@ -124,7 +124,7 @@ fun LoginScreen(
             Text(
                 text = "MIGHTY GPS",
                 color = Color.White,
-                fontSize = 28.sp,
+                style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Black,
                 letterSpacing = 1.5.sp,
                 fontFamily = FontFamily.SansSerif
@@ -153,7 +153,7 @@ fun LoginScreen(
                         Text(
                             text = (authState as AuthUIState.Error).message,
                             color = Color(0xFFFCA5A5),
-                            fontSize = 12.sp
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
                 }
@@ -263,7 +263,7 @@ fun LoginScreen(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = "View App Logs & Error Diagnostics",
-                    fontSize = 12.sp,
+                    style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Medium
                 )
             }
@@ -274,7 +274,7 @@ fun LoginScreen(
             Text(
                 text = "Secure Connection Ensured via TLS Standard Proxy",
                 color = Color(0xFF475569),
-                fontSize = 10.sp,
+                style = MaterialTheme.typography.labelSmall,
                 textAlign = TextAlign.Center
             )
         }

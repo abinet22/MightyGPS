@@ -215,7 +215,7 @@ fun MapTab(
                     Text(
                         "Loading route history & coordinates...",
                         color = Color.White,
-                        fontSize = 12.sp,
+                        style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -257,13 +257,13 @@ fun MapTab(
                         Text(
                             text = UnitFormatter.speed(activePlaybackPos.speedKmh, isMetric).uppercase(),
                             color = Color.White,
-                            fontSize = 15.sp,
+                            style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Black
                         )
                         Text(
                             text = "Crumb ${playbackStepIndex + 1}/${routeHistory.size} • ${activePlaybackPos.deviceTime?.replace("T", " ")?.replace("Z", "") ?: ""}",
                             color = Color(0xFF94A3B8),
-                            fontSize = 10.sp,
+                            style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Medium
                         )
                     }
@@ -317,7 +317,7 @@ fun MapTab(
                     Text(
                         text = "Zones: ${displayedGeofences.size}",
                         color = if (isGeofenceLayerVisible) Color.White else Color.LightGray,
-                        fontSize = 11.sp,
+                        style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -350,14 +350,14 @@ fun MapTab(
                     Text(
                         text = "📍 Inside Zone: ${activeContainedGeofence.name}",
                         color = Color.White,
-                        fontSize = 12.sp,
+                        style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Bold
                     )
                     if (activeContainedGeofence.speedLimit != null) {
                         Text(
                             text = "• ${activeContainedGeofence.speedLimit} km/h limit",
                             color = Color(0xFF6EE7B7),
-                            fontSize = 11.sp
+                            style = MaterialTheme.typography.labelSmall
                         )
                     }
                 }
@@ -404,13 +404,13 @@ fun MapTab(
                                 Text(
                                     text = gf.name,
                                     color = Color.White,
-                                    fontSize = 15.sp,
+                                    style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
                                     text = if (gf.type == "polygon") "Polygon Geofence (${gf.points.size} boundary vertices)" else "Circular Geofence (${gf.radiusMeters.toInt()}m radius)",
                                     color = Color(0xFF60A5FA),
-                                    fontSize = 11.sp
+                                    style = MaterialTheme.typography.labelSmall
                                 )
                             }
                         }
@@ -431,7 +431,7 @@ fun MapTab(
                         Text(
                             text = gf.description,
                             color = Color.LightGray,
-                            fontSize = 12.sp
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
 
@@ -454,13 +454,13 @@ fun MapTab(
                         Text(
                             text = "Assigned: ${targetDev?.name ?: "All Fleet Assets"}",
                             color = Color(0xFF94A3B8),
-                            fontSize = 11.sp
+                            style = MaterialTheme.typography.labelSmall
                         )
                         if (gf.speedLimit != null) {
                             Text(
                                 text = "Speed Cap: ${gf.speedLimit} km/h",
                                 color = Color(0xFFFBBF24),
-                                fontSize = 11.sp,
+                                style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
@@ -483,7 +483,7 @@ fun MapTab(
                         ) {
                             Icon(Icons.Default.Place, contentDescription = null, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Center on Zone", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("Center on Zone", color = Color.White, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
                         }
                         OutlinedButton(
                             onClick = { viewModel.selectGeofence(null) },
@@ -491,7 +491,7 @@ fun MapTab(
                             shape = RoundedCornerShape(10.dp),
                             border = BorderStroke(1.dp, Color(0xFF475569))
                         ) {
-                            Text("Dismiss", color = Color.LightGray, fontSize = 12.sp)
+                            Text("Dismiss", color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -526,7 +526,7 @@ fun MapTab(
                 val devCount = if (devices.isNotEmpty()) devices.size else cachedDevices.size
                 Text(
                     text = "Fleet ($devCount)",
-                    fontSize = 13.sp,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = Color.White
                 )
@@ -567,7 +567,7 @@ fun MapTab(
                                 ) {
                                     CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color(0xFF3B82F6), strokeWidth = 2.dp)
                                     Spacer(modifier = Modifier.width(12.dp))
-                                    Text("Loading asset telemetry...", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                                    Text("Loading asset telemetry...", color = Color.White, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                                 }
                             } else {
                                 Row(
@@ -580,12 +580,12 @@ fun MapTab(
                                             text = dev.name,
                                             fontWeight = FontWeight.ExtraBold,
                                             color = Color.White,
-                                            fontSize = 16.sp
+                                            style = MaterialTheme.typography.headlineSmall
                                         )
                                         Text(
                                             text = "Telemetry ID: ${dev.uniqueId}",
                                             color = Color(0xFF64748B),
-                                            fontSize = 11.sp
+                                            style = MaterialTheme.typography.labelSmall
                                         )
                                     }
                                     // Speed badge
@@ -598,7 +598,7 @@ fun MapTab(
                                             text = UnitFormatter.speed(displaySpeed, isMetric),
                                             color = Color(0xFF10B981),
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = 13.sp,
+                                            style = MaterialTheme.typography.titleMedium,
                                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                         )
                                     }
@@ -623,7 +623,7 @@ fun MapTab(
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Icon(Icons.Default.Badge, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
                                             Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Driver & Vehicle Info", fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                            Text("Driver & Vehicle Info", style = MaterialTheme.typography.labelSmall, color = Color.White, fontWeight = FontWeight.Bold)
                                         }
                                     }
 
@@ -642,7 +642,7 @@ fun MapTab(
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF3B82F6))
                                                 Spacer(modifier = Modifier.width(4.dp))
-                                                Text("Historical Playback", fontSize = 11.sp, color = Color.White)
+                                                Text("Historical Playback", style = MaterialTheme.typography.labelSmall, color = Color.White)
                                             }
                                         }
                                     }
@@ -683,7 +683,7 @@ fun MapTab(
                                                 val currentSpd = routeHistory.getOrNull(playbackStepIndex)?.speedKmh ?: 0.0
                                                 Text(
                                                     text = "Pos ${playbackStepIndex + 1}/${routeHistory.size} • ${String.format("%.1f", currentSpd)} km/h",
-                                                    fontSize = 11.sp,
+                                                    style = MaterialTheme.typography.labelSmall,
                                                     color = Color.White,
                                                     fontWeight = FontWeight.SemiBold,
                                                     maxLines = 1,
@@ -701,14 +701,14 @@ fun MapTab(
                                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                                     modifier = Modifier.height(28.dp)
                                                 ) {
-                                                    Text("Reset", fontSize = 11.sp, color = Color(0xFF94A3B8), maxLines = 1, softWrap = false)
+                                                    Text("Reset", style = MaterialTheme.typography.labelSmall, color = Color(0xFF94A3B8), maxLines = 1, softWrap = false)
                                                 }
                                                 TextButton(
                                                     onClick = onClearRouteHistory,
                                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                                     modifier = Modifier.height(28.dp)
                                                 ) {
-                                                    Text("Close", fontSize = 11.sp, color = Color(0xFFEF4444), fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                                                    Text("Close", style = MaterialTheme.typography.labelSmall, color = Color(0xFFEF4444), fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                                                 }
                                             }
                                         }

@@ -35,6 +35,7 @@ import com.example.data.model.ConsolidatedAlert
 import com.example.data.model.Device
 import com.example.data.model.GeofenceAlert
 import com.example.data.model.Position
+import com.example.ui.theme.MC
 import com.example.util.UnitFormatter
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -107,11 +108,10 @@ fun FleetDevicesDrawerOverlay(
                     .fillMaxWidth(0.85f)
                     .align(Alignment.CenterStart)
                     .clickable(enabled = false) {},
-                color = Color(0xFF0F172A),
+                color = MC.Surface1,
                 shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
-                border = BorderStroke(1.dp, Color(0xFF1E293B)),
-                tonalElevation = 16.dp,
-                shadowElevation = 24.dp
+                tonalElevation = 8.dp,
+                shadowElevation = 16.dp
             ) {
                 Column(
                     modifier = Modifier
@@ -130,13 +130,13 @@ fun FleetDevicesDrawerOverlay(
                             Box(
                                 modifier = Modifier
                                     .size(36.dp)
-                                    .background(Color(0xFF1E293B), CircleShape),
+                                    .background(MC.Surface2, CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.DirectionsCar,
                                     contentDescription = null,
-                                    tint = Color(0xFF60A5FA),
+                                    tint = MC.AccentPrimary,
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
@@ -144,16 +144,15 @@ fun FleetDevicesDrawerOverlay(
                             Column {
                                 Text(
                                     text = "Fleet Devices",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 16.sp
+                                    color = MC.TextPrimary,
+                                    style = MaterialTheme.typography.titleMedium
                                 )
                                 val onlineCount = fleetDevicesList.count { it.status == "online" }
                                 val offlineCount = fleetDevicesList.size - onlineCount
                                 Text(
-                                    text = "🟢 $onlineCount Online  •  🔴 $offlineCount Offline",
-                                    color = Color(0xFF94A3B8),
-                                    fontSize = 11.sp
+                                    text = "$onlineCount Online • $offlineCount Offline",
+                                    color = MC.TextSecondary,
+                                    style = MaterialTheme.typography.labelSmall
                                 )
                             }
                         }
@@ -162,12 +161,12 @@ fun FleetDevicesDrawerOverlay(
                             onClick = onClose,
                             modifier = Modifier
                                 .size(32.dp)
-                                .background(Color(0xFF1E293B), CircleShape)
+                                .background(MC.Surface2, CircleShape)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = "Close Sidebar",
-                                tint = Color.LightGray,
+                                tint = MC.TextSecondary,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -179,26 +178,27 @@ fun FleetDevicesDrawerOverlay(
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        placeholder = { Text("Search name, plate, IMEI...", color = Color.Gray, fontSize = 12.sp) },
+                        placeholder = { Text("Search name, plate, IMEI...", color = MC.TextTertiary, style = MaterialTheme.typography.bodySmall) },
                         singleLine = true,
                         leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Search, contentDescription = null, tint = MC.AccentPrimary, modifier = Modifier.size(18.dp))
                         },
                         trailingIcon = {
                             if (searchQuery.isNotEmpty()) {
                                 IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(20.dp)) {
-                                    Icon(Icons.Default.Clear, contentDescription = "Clear", tint = Color.Gray, modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear", tint = MC.TextSecondary, modifier = Modifier.size(16.dp))
                                 }
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
-                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color(0xFF3B82F6),
-                            unfocusedBorderColor = Color(0xFF334155),
-                            focusedContainerColor = Color(0xFF1E293B),
-                            unfocusedContainerColor = Color(0xFF1E293B)
+                            focusedBorderColor = MC.AccentPrimary,
+                            unfocusedBorderColor = MC.Surface3,
+                            focusedContainerColor = MC.Surface2,
+                            unfocusedContainerColor = MC.Surface2,
+                            focusedTextColor = MC.TextPrimary,
+                            unfocusedTextColor = MC.TextPrimary
                         )
                     )
 
@@ -223,15 +223,15 @@ fun FleetDevicesDrawerOverlay(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isSelected) Color(0xFF2563EB) else Color(0xFF1E293B))
+                                    .background(if (isSelected) MC.AccentPrimary else MC.Surface2)
                                     .clickable { filterStatus = filterKey }
                                     .padding(vertical = 6.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
                                     text = label,
-                                    color = if (isSelected) Color.White else Color(0xFF94A3B8),
-                                    fontSize = 10.sp,
+                                    color = if (isSelected) MC.TextPrimary else MC.TextSecondary,
+                                    style = MaterialTheme.typography.labelSmall,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                                 )
                             }
@@ -239,16 +239,16 @@ fun FleetDevicesDrawerOverlay(
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
-                    HorizontalDivider(color = Color(0xFF1E293B))
+                    HorizontalDivider(color = MC.Surface3)
                     Spacer(modifier = Modifier.height(8.dp))
 
                     // All Fleet Overview Button
                     Surface(
                         onClick = onSelectAllFleet,
                         modifier = Modifier.fillMaxWidth(),
-                        color = if (selectedDeviceId == null) Color(0xFF1E3A8A).copy(alpha = 0.5f) else Color(0xFF1E293B),
+                        color = if (selectedDeviceId == null) MC.AccentSecondary else MC.Surface2,
                         shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, if (selectedDeviceId == null) Color(0xFF3B82F6) else Color.Transparent)
+                        border = if (selectedDeviceId == null) BorderStroke(1.dp, MC.AccentPrimary) else null
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -257,46 +257,34 @@ fun FleetDevicesDrawerOverlay(
                             Icon(
                                 imageVector = Icons.Default.Public,
                                 contentDescription = null,
-                                tint = Color(0xFF60A5FA),
-                                modifier = Modifier.size(20.dp)
+                                tint = MC.AccentPrimary,
+                                modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("All Fleet Overview", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Show all vehicles on map", color = Color(0xFF94A3B8), fontSize = 10.sp)
-                            }
-                            if (selectedDeviceId == null) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .background(Color(0xFF3B82F6), CircleShape)
-                                )
-                            }
+                            Text(
+                                text = "All Fleet View",
+                                color = MC.TextPrimary,
+                                style = MaterialTheme.typography.titleSmall
+                            )
                         }
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Devices LazyColumn
-                    val filteredList = remember(fleetDevicesList, filterStatus, searchQuery) {
+                    val filteredList = remember(fleetDevicesList, searchQuery, filterStatus) {
                         fleetDevicesList.filter { dev ->
                             val matchesFilter = when (filterStatus) {
                                 "ONLINE" -> dev.status == "online"
                                 "OFFLINE" -> dev.status != "online"
                                 else -> true
                             }
-                            val matchesSearch = if (searchQuery.isBlank()) true else {
+                            val plate = dev.attributes["plate"]?.toString() 
+                                ?: dev.attributes["license_plate"]?.toString()
+                                ?: dev.attributes["reg"]?.toString() ?: ""
+                            val matchesSearch = searchQuery.isBlank() || 
                                 dev.name.contains(searchQuery, ignoreCase = true) ||
                                 dev.uniqueId.contains(searchQuery, ignoreCase = true) ||
-                                dev.model?.contains(searchQuery, ignoreCase = true) == true ||
-                                dev.phone?.contains(searchQuery, ignoreCase = true) == true ||
-                                dev.category?.contains(searchQuery, ignoreCase = true) == true ||
-                                dev.attributes["plate"]?.toString()?.contains(searchQuery, ignoreCase = true) == true ||
-                                dev.attributes["license_plate"]?.toString()?.contains(searchQuery, ignoreCase = true) == true ||
-                                dev.attributes["reg"]?.toString()?.contains(searchQuery, ignoreCase = true) == true ||
-                                dev.attributes["customName"]?.toString()?.contains(searchQuery, ignoreCase = true) == true ||
-                                dev.attributes["vehicleName"]?.toString()?.contains(searchQuery, ignoreCase = true) == true
-                            }
+                                plate.contains(searchQuery, ignoreCase = true)
                             matchesFilter && matchesSearch
                         }
                     }
@@ -308,7 +296,7 @@ fun FleetDevicesDrawerOverlay(
                                 .weight(1f),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text("No matching devices found", color = Color.Gray, fontSize = 12.sp)
+                            Text("No matching devices found", color = MC.TextTertiary, style = MaterialTheme.typography.bodySmall)
                         }
                     } else {
                         LazyColumn(
@@ -335,12 +323,9 @@ fun FleetDevicesDrawerOverlay(
                                         onSelectDevice(dev.id, targetLat, targetLng)
                                     },
                                     modifier = Modifier.fillMaxWidth(),
-                                    color = if (isSelected) Color(0xFF1E3A8A) else Color(0xFF1E293B),
+                                    color = if (isSelected) MC.AccentSecondary else MC.Surface2,
                                     shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (isSelected) Color(0xFF3B82F6) else Color(0xFF334155).copy(alpha = 0.5f)
-                                    )
+                                    border = if (isSelected) BorderStroke(1.dp, MC.AccentPrimary) else null
                                 ) {
                                     Row(
                                         modifier = Modifier.padding(10.dp),
@@ -355,7 +340,7 @@ fun FleetDevicesDrawerOverlay(
                                                 modifier = Modifier
                                                     .size(32.dp)
                                                     .background(
-                                                        if (isOnline) Color(0xFF10B981).copy(alpha = 0.15f) else Color(0xFF64748B).copy(alpha = 0.15f),
+                                                        if (isOnline) MC.StatusOnline.copy(alpha = 0.15f) else MC.TextTertiary.copy(alpha = 0.15f),
                                                         CircleShape
                                                     ),
                                                 contentAlignment = Alignment.Center
@@ -368,7 +353,7 @@ fun FleetDevicesDrawerOverlay(
                                                         else -> Icons.Default.DirectionsCar
                                                     },
                                                     contentDescription = null,
-                                                    tint = if (isOnline) Color(0xFF10B981) else Color(0xFF94A3B8),
+                                                    tint = if (isOnline) MC.StatusOnline else MC.TextSecondary,
                                                     modifier = Modifier.size(18.dp)
                                                 )
                                             }
@@ -376,16 +361,15 @@ fun FleetDevicesDrawerOverlay(
                                             Column {
                                                 Text(
                                                     text = dev.name,
-                                                    color = Color.White,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 13.sp,
+                                                    color = MC.TextPrimary,
+                                                    style = MaterialTheme.typography.titleSmall,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
                                                 Text(
                                                     text = if (!plate.isNullOrBlank()) "Plate: $plate" else "IMEI: ${dev.uniqueId}",
-                                                    color = Color(0xFF94A3B8),
-                                                    fontSize = 10.sp,
+                                                    color = MC.TextSecondary,
+                                                    style = MaterialTheme.typography.labelSmall,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
@@ -400,25 +384,13 @@ fun FleetDevicesDrawerOverlay(
                                                 val isMetric = unitSystem == "metric"
                                                 Text(
                                                     text = UnitFormatter.speed(speedVal, isMetric),
-                                                    color = Color(0xFF10B981),
-                                                    fontSize = 11.sp,
+                                                    color = MC.StatusOnline,
+                                                    style = MaterialTheme.typography.labelSmall,
                                                     fontWeight = FontWeight.Bold
                                                 )
-                                                Box(
-                                                    modifier = Modifier
-                                                        .background(Color(0xFF065F46), RoundedCornerShape(4.dp))
-                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                                ) {
-                                                    Text("Online", color = Color(0xFF34D399), fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                                                }
+                                                StatusBadge(text = "Online", color = MC.StatusOnline)
                                             } else {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .background(Color(0xFF374151), RoundedCornerShape(4.dp))
-                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                                ) {
-                                                    Text("Offline", color = Color(0xFF9CA3AF), fontSize = 9.sp, fontWeight = FontWeight.Medium)
-                                                }
+                                                StatusBadge(text = "Offline", color = MC.StatusOffline)
                                             }
                                         }
                                     }
@@ -435,17 +407,18 @@ fun FleetDevicesDrawerOverlay(
 @Composable
 fun TrackScorecard(title: String, count: String, color: Color, modifier: Modifier = Modifier) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-        border = BorderStroke(1.dp, Color(0xFF1E293B)),
+        colors = CardDefaults.cardColors(containerColor = MC.Surface1),
+        shape = RoundedCornerShape(12.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(title, color = Color.Gray, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(title, color = MC.TextSecondary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(modifier = Modifier.height(4.dp))
-            Text(count, color = color, fontSize = 22.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(count, color = color, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -459,7 +432,9 @@ fun DeviceRow(
     onDelete: () -> Unit
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+        colors = CardDefaults.cardColors(containerColor = MC.Surface1),
+        shape = RoundedCornerShape(12.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onSelect() }
@@ -471,7 +446,7 @@ fun DeviceRow(
             Box(
                 modifier = Modifier
                     .size(40.dp)
-                    .background(Color(0xFF1E293B), CircleShape),
+                    .background(MC.Surface2, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -482,9 +457,9 @@ fun DeviceRow(
                     },
                     contentDescription = null,
                     tint = when (device.status) {
-                        "online" -> Color(0xFF10B981)
-                        "offline" -> Color(0xFFEF4444)
-                        else -> Color(0xFFF59E0B)
+                        "online" -> MC.StatusOnline
+                        "offline" -> MC.StatusOffline
+                        else -> MC.StatusIdle
                     },
                     modifier = Modifier.size(20.dp)
                 )
@@ -493,13 +468,22 @@ fun DeviceRow(
             Spacer(modifier = Modifier.width(12.dp))
 
             Column(modifier = Modifier.weight(1f)) {
-                Text(device.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text("IMEI: ${device.uniqueId}", color = Color.Gray, fontSize = 10.sp)
+                Text(device.name, color = MC.TextPrimary, style = MaterialTheme.typography.titleSmall)
+                Text("IMEI: ${device.uniqueId}", color = MC.TextTertiary, style = MaterialTheme.typography.labelSmall)
                 val plateOrModel = device.attributes["plate"]?.toString() ?: device.attributes["license_plate"]?.toString() ?: device.attributes["reg"]?.toString() ?: device.model ?: device.attributes["customName"]?.toString()
                 if (!plateOrModel.isNullOrBlank()) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-                        Box(modifier = Modifier.background(Color(0xFF1E293B), RoundedCornerShape(4.dp)).border(0.5.dp, Color(0xFF3B82F6), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 2.dp)) {
-                            Text("🏷️ Plate/Model: $plateOrModel", color = Color(0xFF60A5FA), fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = MC.Surface2,
+                            modifier = Modifier.padding(top = 2.dp)
+                        ) {
+                            Text(
+                                text = "Plate/Model: $plateOrModel",
+                                color = MC.AccentPrimary,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
                         }
                     }
                 }
@@ -518,14 +502,14 @@ fun DeviceRow(
                     Icon(
                         imageVector = Icons.Default.Build,
                         contentDescription = "Odometer/Maintenance",
-                        tint = if (isOverdue) Color(0xFFEF4444) else if (isDue) Color(0xFFF59E0B) else Color(0xFF10B981),
+                        tint = if (isOverdue) MC.StatusOffline else if (isDue) MC.StatusIdle else MC.StatusOnline,
                         modifier = Modifier.size(11.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "Odo: ${String.format("%.1f", odoKm)} km" + if (isOverdue) " (OVERDUE! ⚠️)" else if (isDue) " (Service Soon 🔧)" else " (Engine Optimal)",
-                        color = if (isOverdue) Color(0xFFF87171) else if (isDue) Color(0xFFFBBF24) else Color(0xFF34D399),
-                        fontSize = 10.sp,
+                        text = "Odo: ${String.format("%.1f", odoKm)} km" + if (isOverdue) " (OVERDUE)" else if (isDue) " (Service Soon)" else " (Engine Optimal)",
+                        color = if (isOverdue) MC.StatusOffline else if (isDue) MC.StatusIdle else MC.StatusOnline,
+                        style = MaterialTheme.typography.labelSmall,
                         fontWeight = if (isDue || isOverdue) FontWeight.Bold else FontWeight.Normal
                     )
                 }
@@ -533,8 +517,8 @@ fun DeviceRow(
                 position?.address?.let {
                     Text(
                         text = it,
-                        color = Color(0xFF94A3B8),
-                        fontSize = 11.sp,
+                        color = MC.TextSecondary,
+                        style = MaterialTheme.typography.bodySmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 4.dp)
@@ -543,19 +527,10 @@ fun DeviceRow(
             }
 
             Column(horizontalAlignment = Alignment.End) {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (device.status == "online") Color(0x2210B981) else Color(0x2264748B)
-                    )
-                ) {
-                    Text(
-                        text = device.status.uppercase(),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 9.sp,
-                        color = if (device.status == "online") Color(0xFF10B981) else Color(0xFF94A3B8),
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
+                StatusBadge(
+                    text = device.status.uppercase(),
+                    color = if (device.status == "online") MC.StatusOnline else MC.StatusOffline
+                )
             }
         }
     }
@@ -567,7 +542,9 @@ fun OfflineDeviceRow(
     onSelect: () -> Unit
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+        colors = CardDefaults.cardColors(containerColor = MC.Surface1),
+        shape = RoundedCornerShape(12.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onSelect() }
@@ -579,20 +556,20 @@ fun OfflineDeviceRow(
             Box(
                 modifier = Modifier
                     .size(40.dp)
-                    .background(Color(0xFF1E293B), CircleShape),
+                    .background(MC.Surface2, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFF94A3B8), modifier = Modifier.size(20.dp))
+                Icon(Icons.Default.Lock, contentDescription = null, tint = MC.TextSecondary, modifier = Modifier.size(20.dp))
             }
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(cached.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text("Offline Cache IMEI: ${cached.uniqueId}", color = Color.Gray, fontSize = 10.sp)
+                Text(cached.name, color = MC.TextPrimary, style = MaterialTheme.typography.titleSmall)
+                Text("Offline Cache IMEI: ${cached.uniqueId}", color = MC.TextTertiary, style = MaterialTheme.typography.labelSmall)
                 cached.address?.let {
-                    Text(it, color = Color.LightGray, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(it, color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            Text("CACHED", color = Color(0xFFF59E0B), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            StatusBadge(text = "CACHED", color = MC.StatusIdle)
         }
     }
 }
@@ -605,17 +582,18 @@ fun MetricBox(
     modifier: Modifier = Modifier
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-        border = BorderStroke(1.dp, Color(0xFF1E293B)),
+        colors = CardDefaults.cardColors(containerColor = MC.Surface1),
+        shape = RoundedCornerShape(10.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier
     ) {
         Column(
             modifier = Modifier.padding(10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(title, color = Color.Gray, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(title, color = MC.TextSecondary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(modifier = Modifier.height(4.dp))
-            Text(value, color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(value, color = color, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -623,8 +601,9 @@ fun MetricBox(
 @Composable
 fun AlertCardRow(alert: CachedAlert) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0x551E293B)),
-        border = BorderStroke(1.dp, Color(0xFF1E293B))
+        colors = CardDefaults.cardColors(containerColor = MC.Surface1),
+        shape = RoundedCornerShape(10.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Row(
             modifier = Modifier
@@ -632,46 +611,40 @@ fun AlertCardRow(alert: CachedAlert) {
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val alertColor = when (alert.alarmType) {
+                "sos" -> MC.StatusOffline
+                "overspeed" -> MC.StatusIdle
+                else -> MC.AccentPrimary
+            }
             Box(
                 modifier = Modifier
                     .size(36.dp)
-                    .background(
-                        when (alert.alarmType) {
-                            "sos" -> Color(0x33EF4444)
-                            "overspeed" -> Color(0x33F59E0B)
-                            else -> Color(0x333B82F6)
-                        },
-                        CircleShape
-                    ),
+                    .background(alertColor.copy(alpha = 0.15f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = when (alert.alarmType) {
                         "sos" -> Icons.Default.Warning
-                        "overspeed" -> Icons.Default.Share
+                        "overspeed" -> Icons.Default.Speed
                         else -> Icons.Default.Info
                     },
                     contentDescription = null,
-                    tint = when (alert.alarmType) {
-                        "sos" -> Color(0xFFEF4444)
-                        "overspeed" -> Color(0xFFF59E0B)
-                        else -> Color(0xFF3B82F6)
-                    },
+                    tint = alertColor,
                     modifier = Modifier.size(16.dp)
                 )
             }
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(alert.deviceName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(alert.deviceName, color = MC.TextPrimary, style = MaterialTheme.typography.titleSmall)
                     Text(
                         text = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(alert.timestamp)),
-                        color = Color.Gray,
-                        fontSize = 10.sp
+                        color = MC.TextTertiary,
+                        style = MaterialTheme.typography.labelSmall
                     )
                 }
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(alert.message, color = Color.LightGray, fontSize = 11.sp)
+                Text(alert.message, color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -699,8 +672,7 @@ fun MapStyleControlLayer(
             if (!isExpanded) {
                 Card(
                     shape = CircleShape,
-                    colors = CardDefaults.cardColors(containerColor = Color(0xEC0B132B)),
-                    border = BorderStroke(1.5.dp, Color(0xFF3B82F6)),
+                    colors = CardDefaults.cardColors(containerColor = MC.Surface1),
                     elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
                     modifier = Modifier
                         .size(46.dp)
@@ -710,23 +682,18 @@ fun MapStyleControlLayer(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = when (mapProviderStyle) {
-                                "google_road" -> "🗺️"
-                                "google_satellite" -> "📷"
-                                "google_hybrid" -> "🛰️"
-                                "google_terrain" -> "⛰️"
-                                else -> "🗺️"
-                            },
-                            fontSize = 20.sp
+                        Icon(
+                            imageVector = Icons.Default.Layers,
+                            contentDescription = "Map Layers",
+                            tint = MC.AccentPrimary,
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                 }
             } else {
                 Card(
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xEC0B132B)),
-                    border = BorderStroke(1.5.dp, Color(0xFF475569)),
+                    colors = CardDefaults.cardColors(containerColor = MC.Surface1),
                     elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
                     modifier = Modifier.widthIn(max = 280.dp)
                 ) {
@@ -741,8 +708,8 @@ fun MapStyleControlLayer(
                         ) {
                             Text(
                                 text = "MAP & LAYERS",
-                                color = Color(0xFF60A5FA),
-                                fontSize = 11.sp,
+                                color = MC.AccentPrimary,
+                                style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.padding(start = 4.dp)
                             )
@@ -753,7 +720,7 @@ fun MapStyleControlLayer(
                                 Icon(
                                     imageVector = Icons.Default.Close,
                                     contentDescription = "Collapse",
-                                    tint = Color.LightGray,
+                                    tint = MC.TextSecondary,
                                     modifier = Modifier.size(14.dp)
                                 )
                             }
@@ -761,8 +728,8 @@ fun MapStyleControlLayer(
 
                         Text(
                             text = "OVERLAY LAYERS",
-                            color = Color(0xFF60A5FA),
-                            fontSize = 9.sp,
+                            color = MC.AccentPrimary,
+                            style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(top = 2.dp, start = 4.dp)
                         )
@@ -770,12 +737,7 @@ fun MapStyleControlLayer(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(if (isGeofenceLayerVisible) Color(0x2210B981) else Color(0x11FFFFFF))
-                                .border(
-                                    width = 1.dp,
-                                    color = if (isGeofenceLayerVisible) Color(0xFF10B981) else Color(0xFF334155),
-                                    shape = RoundedCornerShape(8.dp)
-                                )
+                                .background(if (isGeofenceLayerVisible) MC.StatusOnline.copy(alpha = 0.15f) else MC.Surface2)
                                 .clickable { onToggleGeofenceLayer() }
                                 .padding(horizontal = 10.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -785,18 +747,23 @@ fun MapStyleControlLayer(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("🛡️", fontSize = 15.sp)
+                                Icon(
+                                    imageVector = Icons.Default.Shield,
+                                    contentDescription = null,
+                                    tint = if (isGeofenceLayerVisible) MC.StatusOnline else MC.TextSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
                                 Column {
                                     Text(
                                         text = "Geofence Polygons",
-                                        color = if (isGeofenceLayerVisible) Color.White else Color.LightGray,
-                                        fontSize = 12.sp,
+                                        color = if (isGeofenceLayerVisible) MC.TextPrimary else MC.TextSecondary,
+                                        style = MaterialTheme.typography.bodySmall,
                                         fontWeight = FontWeight.SemiBold
                                     )
                                     Text(
                                         text = if (geofenceCount > 0) "$geofenceCount active zones" else "No zones loaded",
-                                        color = if (isGeofenceLayerVisible) Color(0xFF34D399) else Color.Gray,
-                                        fontSize = 10.sp
+                                        color = if (isGeofenceLayerVisible) MC.StatusOnline else MC.TextTertiary,
+                                        style = MaterialTheme.typography.labelSmall
                                     )
                                 }
                             }
@@ -804,21 +771,21 @@ fun MapStyleControlLayer(
                                 checked = isGeofenceLayerVisible,
                                 onCheckedChange = { onToggleGeofenceLayer() },
                                 colors = SwitchDefaults.colors(
-                                    checkedThumbColor = Color.White,
-                                    checkedTrackColor = Color(0xFF10B981)
+                                    checkedThumbColor = MC.TextPrimary,
+                                    checkedTrackColor = MC.StatusOnline
                                 ),
                                 modifier = Modifier.size(width = 38.dp, height = 24.dp)
                             )
                         }
 
-                        HorizontalDivider(color = Color(0xFF1E293B))
+                        HorizontalDivider(color = MC.Surface3)
 
                         val groupedOptions = listOf(
                             "GOOGLE MAPS STYLES" to listOf(
-                                Triple("google_road", "🗺️", "Roadmap (default)"),
-                                Triple("google_satellite", "📷", "Satellite"),
-                                Triple("google_hybrid", "🛰️", "Hybrid"),
-                                Triple("google_terrain", "⛰️", "Terrain")
+                                Triple("google_road", Icons.Default.Map, "Roadmap (default)"),
+                                Triple("google_satellite", Icons.Default.Satellite, "Satellite"),
+                                Triple("google_hybrid", Icons.Default.Layers, "Hybrid"),
+                                Triple("google_terrain", Icons.Default.Terrain, "Terrain")
                             )
                         )
 
@@ -831,23 +798,18 @@ fun MapStyleControlLayer(
                             groupedOptions.forEach { (category, stylesList) ->
                                 Text(
                                     text = category,
-                                    color = Color(0xFF60A5FA),
-                                    fontSize = 9.sp,
+                                    color = MC.AccentPrimary,
+                                    style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(top = 4.dp, start = 4.dp, bottom = 2.dp)
                                 )
-                                stylesList.forEach { (styleKey, emoji, label) ->
+                                stylesList.forEach { (styleKey, icon, label) ->
                                     val isActive = mapProviderStyle == styleKey
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clip(RoundedCornerShape(8.dp))
-                                            .background(if (isActive) Color(0x333B82F6) else Color.Transparent)
-                                            .border(
-                                                width = 1.dp,
-                                                color = if (isActive) Color(0xFF3B82F6) else Color.Transparent,
-                                                shape = RoundedCornerShape(8.dp)
-                                            )
+                                            .background(if (isActive) MC.AccentPrimary.copy(alpha = 0.2f) else Color.Transparent)
                                             .clickable {
                                                 onStyleSelected(styleKey)
                                                 isExpanded = false
@@ -856,19 +818,19 @@ fun MapStyleControlLayer(
                                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(emoji, fontSize = 16.sp)
+                                        Icon(icon, contentDescription = null, tint = if (isActive) MC.AccentPrimary else MC.TextSecondary, modifier = Modifier.size(18.dp))
                                         Text(
                                             text = label,
-                                            color = if (isActive) Color(0xFF60A5FA) else Color.White,
-                                            fontSize = 12.sp,
-                                            fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
+                                            color = if (isActive) MC.AccentPrimary else MC.TextPrimary,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
                                             modifier = Modifier.weight(1f)
                                         )
                                         if (isActive) {
                                             Icon(
                                                 imageVector = Icons.Default.Check,
                                                 contentDescription = "Selected",
-                                                tint = Color(0xFF3B82F6),
+                                                tint = MC.AccentPrimary,
                                                 modifier = Modifier.size(14.dp)
                                             )
                                         }
@@ -890,53 +852,58 @@ fun MapTypeToggle(
     onFeedback: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(
-        modifier = modifier
-            .background(Color(0xEC0B132B), RoundedCornerShape(28.dp))
-            .border(1.5.dp, Color(0xFF1E293B).copy(alpha = 0.8f), RoundedCornerShape(28.dp))
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(28.dp),
+        color = MC.Surface1,
+        tonalElevation = 4.dp,
+        shadowElevation = 8.dp
     ) {
-        val currentMapType = when {
-            mapProviderStyle.contains("satellite") || mapProviderStyle.contains("hybrid") -> "satellite"
-            mapProviderStyle.contains("terrain") || mapProviderStyle.contains("outdoors") -> "terrain"
-            else -> "roadmap"
-        }
+        Row(
+            modifier = Modifier.padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val currentMapType = when {
+                mapProviderStyle.contains("satellite") || mapProviderStyle.contains("hybrid") -> "satellite"
+                mapProviderStyle.contains("terrain") || mapProviderStyle.contains("outdoors") -> "terrain"
+                else -> "roadmap"
+            }
 
-        val options = listOf(
-            Triple("roadmap", "🗺️", "Road"),
-            Triple("satellite", "🛰️", "Satellite"),
-            Triple("terrain", "⛰️", "Terrain")
-        )
+            val options = listOf(
+                Triple("roadmap", Icons.Default.Map, "Road"),
+                Triple("satellite", Icons.Default.Satellite, "Satellite"),
+                Triple("terrain", Icons.Default.Terrain, "Terrain")
+            )
 
-        options.forEach { (type, emoji, displayName) ->
-            val isSelected = currentMapType == type
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(if (isSelected) Color(0xFF3B82F6) else Color.Transparent)
-                    .clickable {
-                        val newStyle = when (type) {
-                            "satellite" -> "google_satellite"
-                            "terrain" -> "google_terrain"
-                            else -> "google_road"
+            options.forEach { (type, icon, displayName) ->
+                val isSelected = currentMapType == type
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(if (isSelected) MC.AccentPrimary else Color.Transparent)
+                        .clickable {
+                            val newStyle = when (type) {
+                                "satellite" -> "google_satellite"
+                                "terrain" -> "google_terrain"
+                                else -> "google_road"
+                            }
+                            onStyleSelected(newStyle)
+                            onFeedback("Switched to $displayName view")
                         }
-                        onStyleSelected(newStyle)
-                        onFeedback("Switched to $displayName view")
-                    }
-                    .heightIn(min = 44.dp)
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(text = emoji, fontSize = 15.sp)
-                Text(
-                    text = displayName,
-                    color = if (isSelected) Color.White else Color.LightGray,
-                    fontSize = 12.sp,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                )
+                        .heightIn(min = 44.dp)
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(icon, contentDescription = null, tint = if (isSelected) MC.TextPrimary else MC.TextSecondary, modifier = Modifier.size(16.dp))
+                    Text(
+                        text = displayName,
+                        color = if (isSelected) MC.TextPrimary else MC.TextSecondary,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                    )
+                }
             }
         }
     }

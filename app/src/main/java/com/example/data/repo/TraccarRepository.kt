@@ -541,8 +541,8 @@ class TraccarRepository(private val context: Context) {
             val toDate = try { format.parse(to) } catch (_: Exception) { Date() }
             val durationHours = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: (System.currentTimeMillis() - 24 * 3600 * 1000L))) / (1000 * 3600.0)
             val tripCount = when {
-                durationHours > 200 -> 18 // Monthly
-                durationHours > 48 -> 8   // Weekly
+                durationHours > 200 -> 32 // Monthly
+                durationHours > 48 -> 14  // Weekly
                 else -> 4                 // Today
             }
 
@@ -553,7 +553,9 @@ class TraccarRepository(private val context: Context) {
                 "Oakland Freight Maritime Terminal" to Pair(37.8044, -122.2711),
                 "South Bay Enterprise Warehouse" to Pair(37.7394, -122.4494),
                 "North Waterfront Fulfillment Yard" to Pair(37.8080, -122.4120),
-                "San Jose Logistics Staging Area" to Pair(37.3382, -121.8863)
+                "San Jose Logistics Staging Area" to Pair(37.3382, -121.8863),
+                "Twin Peaks Transit Zone" to Pair(37.7599, -122.4368),
+                "Commercial Delivery Hub Alpha" to Pair(37.7670, -122.4440)
             )
 
             val stepTime = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: 0L)) / tripCount
@@ -595,11 +597,12 @@ class TraccarRepository(private val context: Context) {
                     )
                 )
             }
-            trips
+            com.example.util.ReverseGeocoder.enhanceTrips(context, trips)
         } else {
             val api = traccarApi ?: return emptyList()
             try {
-                api.getTripsReport(deviceId = deviceId, from = from, to = to)
+                val rawTrips = api.getTripsReport(deviceId = deviceId, from = from, to = to)
+                com.example.util.ReverseGeocoder.enhanceTrips(context, rawTrips)
             } catch (e: Exception) {
                 Log.w(TAG, "getTripsReport remote failed: ${e.message}")
                 emptyList()
@@ -628,8 +631,8 @@ class TraccarRepository(private val context: Context) {
             val toDate = try { format.parse(to) } catch (_: Exception) { Date() }
             val durationHours = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: (System.currentTimeMillis() - 24 * 3600 * 1000L))) / (1000 * 3600.0)
             val stopCount = when {
-                durationHours > 200 -> 22 // Monthly
-                durationHours > 48 -> 10  // Weekly
+                durationHours > 200 -> 36 // Monthly
+                durationHours > 48 -> 16  // Weekly
                 else -> 5                 // Today
             }
 
@@ -639,7 +642,9 @@ class TraccarRepository(private val context: Context) {
                 "Customer Fulfillment Loading Zone" to Pair(37.7690, -122.3890),
                 "Highway Service Plaza Fueling Station" to Pair(37.8044, -122.2711),
                 "Fleet Maintenance Yard" to Pair(37.7394, -122.4494),
-                "Retail Distribution Staging Terminal" to Pair(37.8080, -122.4120)
+                "Retail Distribution Staging Terminal" to Pair(37.8080, -122.4120),
+                "San Jose Logistics Staging Area" to Pair(37.3382, -121.8863),
+                "Twin Peaks Staging Zone, Castro Blvd" to Pair(37.7599, -122.4368)
             )
 
             val stepTime = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: 0L)) / stopCount
@@ -667,11 +672,12 @@ class TraccarRepository(private val context: Context) {
                     )
                 )
             }
-            stops
+            com.example.util.ReverseGeocoder.enhanceStops(context, stops)
         } else {
             val api = traccarApi ?: return emptyList()
             try {
-                api.getStopsReport(deviceId = deviceId, from = from, to = to)
+                val rawStops = api.getStopsReport(deviceId = deviceId, from = from, to = to)
+                com.example.util.ReverseGeocoder.enhanceStops(context, rawStops)
             } catch (e: Exception) {
                 Log.w(TAG, "getStopsReport remote failed: ${e.message}")
                 emptyList()

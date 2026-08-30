@@ -395,7 +395,15 @@ fun DashboardScreen(
             if (currentTab != 1 && currentTab != 2) {
                 TopAppBar(
                     navigationIcon = {
-                        if (currentTab == 3 || currentTab == 4 || currentTab == 6 || currentTab == 7) {
+                        if (currentTab == 0 && selectedReportDevice != null) {
+                            IconButton(onClick = { selectedReportDevice = null }) {
+                                Icon(
+                                    imageVector = Icons.Default.ArrowBack,
+                                    contentDescription = "Back to Fleet List",
+                                    tint = Color.White
+                                )
+                            }
+                        } else if (currentTab == 3 || currentTab == 4 || currentTab == 6 || currentTab == 7) {
                             IconButton(onClick = { currentTab = 5 }) {
                                 Icon(
                                     imageVector = Icons.Default.ArrowBack,
@@ -408,8 +416,10 @@ fun DashboardScreen(
                     title = {
                         Column {
                             Text(
-                                text = if (currentTab == 0) "Fleet Reports" else if (currentTab == 5) "Settings & Preferences" else "MightyGPS Fleet Control",
-                                fontSize = 17.sp,
+                                text = if (currentTab == 0) {
+                                    if (selectedReportDevice != null) "${selectedReportDevice?.name} Report" else "Fleet Reports"
+                                } else if (currentTab == 5) "Settings & Preferences" else "MightyGPS Fleet Control",
+                                style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = Color(0xFF60A5FA)
                             )
@@ -426,7 +436,7 @@ fun DashboardScreen(
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
                                         text = "Refreshing Assets...",
-                                        fontSize = 10.sp,
+                                        style = MaterialTheme.typography.labelSmall,
                                         color = Color(0xFF60A5FA),
                                         fontWeight = FontWeight.Bold
                                     )
@@ -443,7 +453,7 @@ fun DashboardScreen(
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
                                         text = if (isSocketConnected) "Live Telemetry Connected" else "Reconnecting Gateway",
-                                        fontSize = 10.sp,
+                                        style = MaterialTheme.typography.labelSmall,
                                         color = Color(0xFF94A3B8)
                                     )
                                 }
@@ -467,7 +477,7 @@ fun DashboardScreen(
                     selected = currentTab == 1,
                     onClick = { currentTab = 1 },
                     icon = { Icon(Icons.Default.LocationOn, contentDescription = "Fleet tracking Map") },
-                    label = { Text(viewModel.translate("active_fleet"), fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                    label = { Text(viewModel.translate("active_fleet"), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold) },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = Color(0xFF3B82F6),
                         selectedTextColor = Color.White,
@@ -480,7 +490,7 @@ fun DashboardScreen(
                     selected = currentTab == 0,
                     onClick = { currentTab = 0 },
                     icon = { Icon(Icons.Default.List, contentDescription = "Reports") },
-                    label = { Text(if (viewModel.appLanguage.value == "es") "Reportes" else if (viewModel.appLanguage.value == "am") "ሪፖርቶች" else "Reports", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                    label = { Text(if (viewModel.appLanguage.value == "es") "Reportes" else if (viewModel.appLanguage.value == "am") "ሪፖርቶች" else "Reports", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold) },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = Color(0xFF3B82F6),
                         selectedTextColor = Color.White,
@@ -493,7 +503,7 @@ fun DashboardScreen(
                     selected = currentTab == 5,
                     onClick = { currentTab = 5 },
                     icon = { Icon(Icons.Default.Settings, contentDescription = "App Customizer") },
-                    label = { Text(viewModel.translate("settings"), fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                    label = { Text(viewModel.translate("settings"), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold) },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = Color(0xFF3B82F6),
                         selectedTextColor = Color.White,
@@ -580,13 +590,13 @@ fun DashboardScreen(
                                                     text = if (alert.type == "ENTERED") "GEOFENCE ENTERED 🟢" else "GEOFENCE EXITED 🔴",
                                                     color = if (alert.type == "ENTERED") Color(0xFF34D399) else Color(0xFFF87171),
                                                     fontWeight = FontWeight.ExtraBold,
-                                                    fontSize = 10.sp,
+                                                    style = MaterialTheme.typography.labelSmall,
                                                     letterSpacing = 1.sp
                                                 )
                                                 Text(
                                                     text = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(alert.timestamp)),
                                                     color = Color.LightGray.copy(alpha = 0.6f),
-                                                    fontSize = 9.sp
+                                                    style = MaterialTheme.typography.labelSmall
                                                 )
                                             }
                                             Spacer(modifier = Modifier.height(4.dp))
@@ -594,12 +604,12 @@ fun DashboardScreen(
                                                 text = if (alert.type == "ENTERED") "${alert.deviceName} arrived inside ${alert.geofenceName}" else "${alert.deviceName} exited ${alert.geofenceName}",
                                                 color = Color.White,
                                                 fontWeight = FontWeight.SemiBold,
-                                                fontSize = 13.sp
+                                                style = MaterialTheme.typography.bodyMedium
                                             )
                                             Text(
                                                 text = if (alert.type == "ENTERED") "Safe boundary crossed successfully." else "Security notice: Fleet asset left zone.",
                                                 color = Color.LightGray,
-                                                fontSize = 11.sp
+                                                style = MaterialTheme.typography.bodySmall
                                             )
                                         }
                                         
@@ -682,7 +692,7 @@ fun DashboardScreen(
                                         Text(
                                             text = "Sync / Connection Alert",
                                             fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 13.sp,
+                                            style = MaterialTheme.typography.bodyMedium,
                                             color = Color.White
                                         )
                                     }
@@ -701,7 +711,7 @@ fun DashboardScreen(
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
                                     text = err,
-                                    fontSize = 11.sp,
+                                    style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(start = 32.dp)
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
@@ -725,7 +735,7 @@ fun DashboardScreen(
                                         Spacer(modifier = Modifier.width(4.dp))
                                         Text(
                                             text = "Go to Reports",
-                                            fontSize = 11.sp,
+                                            style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.Bold,
                                             color = Color(0xFFF59E0B)
                                         )
@@ -747,7 +757,7 @@ fun DashboardScreen(
                                         Spacer(modifier = Modifier.width(4.dp))
                                         Text(
                                             text = "Retry Sync",
-                                            fontSize = 11.sp,
+                                            style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.Bold,
                                             color = Color.White
                                         )
@@ -775,7 +785,7 @@ fun DashboardScreen(
                             Text(
                                 text = it,
                                 color = Color(0xFFBFDBFE),
-                                fontSize = 12.sp,
+                                style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.padding(12.dp),
                                 fontWeight = FontWeight.Bold
                             )
@@ -996,10 +1006,10 @@ fun DashboardScreen(
     if (showAddDeviceSheet) {
         AlertDialog(
             onDismissRequest = { showAddDeviceSheet = false },
-            title = { Text("Commission New Tracker", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold) },
+            title = { Text("Commission New Tracker", color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Register a new telematics tracker hardware device node onto this multi-tenant tenant account.", fontSize = 11.sp, color = Color.LightGray)
+                    Text("Register a new telematics tracker hardware device node onto this multi-tenant tenant account.", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
                     
                     OutlinedTextField(
                         value = newDeviceName,

@@ -6,7 +6,6 @@ import android.net.Uri
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,7 +14,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,17 +24,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.data.model.Device
 import com.example.data.model.Event
 import com.example.data.model.Position
+import com.example.ui.screens.components.StatusBadge
+import com.example.ui.theme.MC
 import com.example.util.UnitFormatter
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * Modular BottomSheet component displaying driver details, vehicle info,
@@ -62,11 +57,11 @@ fun DeviceDetailBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,
-        containerColor = Color(0xFF0F172A),
-        contentColor = Color.White,
+        containerColor = MC.Surface1,
+        contentColor = MC.TextPrimary,
         dragHandle = {
             BottomSheetDefaults.DragHandle(
-                color = Color(0xFF475569)
+                color = MC.TextTertiary
             )
         },
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
@@ -129,7 +124,7 @@ fun DeviceDetailContent(
     onCallDriver: (String?) -> Unit,
     onShareLocation: () -> Unit
 ) {
-    var selectedTab by remember { mutableStateOf(0) } // 0: Vehicle, 1: Driver, 2: Status Updates
+    var selectedTab by remember { mutableStateOf(0) }
 
     val isOnline = device.status == "online"
     val categoryIcon = when (device.category?.lowercase()) {
@@ -168,14 +163,14 @@ fun DeviceDetailContent(
                     modifier = Modifier
                         .size(48.dp)
                         .clip(CircleShape)
-                        .background(if (isOnline) Color(0xFF1E3A8A) else Color(0xFF334155)),
+                        .background(if (isOnline) MC.AccentPrimary.copy(alpha = 0.2f) else MC.Surface2),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = categoryIcon,
                         contentDescription = null,
-                        tint = if (isOnline) Color(0xFF3B82F6) else Color.LightGray,
-                        modifier = Modifier.size(26.dp)
+                        tint = if (isOnline) MC.AccentPrimary else MC.TextSecondary,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
                 Spacer(modifier = Modifier.width(12.dp))
@@ -183,31 +178,21 @@ fun DeviceDetailContent(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = device.name,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp,
-                            color = Color.White,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MC.TextPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(if (isOnline) Color(0xFF065F46) else Color(0xFF991B1B))
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = if (isOnline) "ONLINE" else "OFFLINE",
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = if (isOnline) Color(0xFF34D399) else Color(0xFFFCA5A5)
-                            )
-                        }
+                        StatusBadge(
+                            text = if (isOnline) "ONLINE" else "OFFLINE",
+                            color = if (isOnline) MC.StatusOnline else MC.StatusOffline
+                        )
                     }
                     Text(
-                        text = "IMEI / ID: ${device.uniqueId} • Model: ${device.model ?: device.category?.uppercase() ?: "Standard"}",
-                        color = Color(0xFF94A3B8),
-                        fontSize = 11.sp
+                        text = "IMEI: ${device.uniqueId} • Model: ${device.model ?: device.category?.uppercase() ?: "Standard"}",
+                        color = MC.TextSecondary,
+                        style = MaterialTheme.typography.labelSmall
                     )
                 }
             }
@@ -217,12 +202,12 @@ fun DeviceDetailContent(
                 modifier = Modifier
                     .size(36.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF1E293B))
+                    .background(MC.Surface2)
             ) {
                 Icon(
                     imageVector = Icons.Default.Close,
                     contentDescription = "Close",
-                    tint = Color.Gray,
+                    tint = MC.TextSecondary,
                     modifier = Modifier.size(18.dp)
                 )
             }
@@ -235,7 +220,7 @@ fun DeviceDetailContent(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF1E293B))
+                .background(MC.Surface2)
                 .padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -307,7 +292,7 @@ private fun TabButton(
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(if (isSelected) Color(0xFF2563EB) else Color.Transparent)
+            .background(if (isSelected) MC.AccentPrimary else Color.Transparent)
             .clickable { onClick() }
             .padding(vertical = 8.dp),
         contentAlignment = Alignment.Center
@@ -316,15 +301,15 @@ private fun TabButton(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = if (isSelected) Color.White else Color(0xFF94A3B8),
+                tint = if (isSelected) MC.TextPrimary else MC.TextSecondary,
                 modifier = Modifier.size(14.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(
                 text = title,
-                fontSize = 11.sp,
+                style = MaterialTheme.typography.labelSmall,
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                color = if (isSelected) Color.White else Color(0xFF94A3B8)
+                color = if (isSelected) MC.TextPrimary else MC.TextSecondary
             )
         }
     }
@@ -344,21 +329,21 @@ private fun VehicleTabContent(
     val speedKmh = position?.speedKmh ?: (device.attributes["speed"] as? Number)?.toDouble() ?: 0.0
     val altitude = position?.altitude ?: 0.0
     val course = position?.course ?: 0.0
-    val address = position?.address ?: "GPS Coordinates: ${String.format("%.4f", position?.latitude ?: 0.0)}, ${String.format("%.4f", position?.longitude ?: 0.0)}"
+    val address = position?.address ?: "GPS: ${String.format("%.4f", position?.latitude ?: 0.0)}, ${String.format("%.4f", position?.longitude ?: 0.0)}"
     val ignition = position?.attributes?.get("ignition") as? Boolean ?: true
     val battery = (position?.attributes?.get("batteryLevel") as? Number)?.toInt() ?: 94
     val fuel = (position?.attributes?.get("fuel") as? Number)?.toInt() ?: 78
 
     val headingStr = when (((course + 22.5) % 360 / 45).toInt()) {
-        0 -> "North ↑"
-        1 -> "North-East ↗"
-        2 -> "East →"
-        3 -> "South-East ↘"
-        4 -> "South ↓"
-        5 -> "South-West ↙"
-        6 -> "West ←"
-        7 -> "North-West ↖"
-        else -> "North ↑"
+        0 -> "North"
+        1 -> "North-East"
+        2 -> "East"
+        3 -> "South-East"
+        4 -> "South"
+        5 -> "South-West"
+        6 -> "West"
+        7 -> "North-West"
+        else -> "North"
     }
 
     LazyColumn(
@@ -368,7 +353,7 @@ private fun VehicleTabContent(
         // Location Card
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                colors = CardDefaults.cardColors(containerColor = MC.Surface2),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Row(
@@ -380,21 +365,21 @@ private fun VehicleTabContent(
                     Icon(
                         imageVector = Icons.Default.Place,
                         contentDescription = null,
-                        tint = Color(0xFFEF4444),
+                        tint = MC.StatusOffline,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "CURRENT LOCATION",
-                            fontSize = 9.sp,
+                            style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF38BDF8)
+                            color = MC.AccentPrimary
                         )
                         Text(
                             text = address,
-                            fontSize = 12.sp,
-                            color = Color.LightGray,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MC.TextPrimary,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -413,21 +398,21 @@ private fun VehicleTabContent(
                     title = "SPEED",
                     value = UnitFormatter.speed(speedKmh, isMetric),
                     icon = Icons.Default.Speed,
-                    valueColor = Color(0xFF10B981),
+                    valueColor = MC.StatusOnline,
                     modifier = Modifier.weight(1f)
                 )
                 MetricCard(
                     title = "HEADING",
                     value = headingStr,
                     icon = Icons.Default.Navigation,
-                    valueColor = Color(0xFF3B82F6),
+                    valueColor = MC.AccentPrimary,
                     modifier = Modifier.weight(1f)
                 )
                 MetricCard(
                     title = "IGNITION",
                     value = if (ignition) "ON" else "OFF",
                     icon = Icons.Default.PowerSettingsNew,
-                    valueColor = if (ignition) Color(0xFF10B981) else Color(0xFFEF4444),
+                    valueColor = if (ignition) MC.StatusOnline else MC.StatusOffline,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -442,21 +427,21 @@ private fun VehicleTabContent(
                     title = "ALTITUDE",
                     value = UnitFormatter.altitude(altitude, isMetric),
                     icon = Icons.Default.FilterHdr,
-                    valueColor = Color.White,
+                    valueColor = MC.TextPrimary,
                     modifier = Modifier.weight(1f)
                 )
                 MetricCard(
                     title = "BATTERY",
                     value = "$battery%",
                     icon = Icons.Default.BatteryChargingFull,
-                    valueColor = Color(0xFFF59E0B),
+                    valueColor = MC.StatusIdle,
                     modifier = Modifier.weight(1f)
                 )
                 MetricCard(
                     title = "FUEL TANK",
                     value = "$fuel%",
                     icon = Icons.Default.LocalGasStation,
-                    valueColor = Color(0xFF10B981),
+                    valueColor = MC.StatusOnline,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -467,9 +452,9 @@ private fun VehicleTabContent(
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "TELEMATICS ACTIONS",
-                fontSize = 10.sp,
+                style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF64748B)
+                color = MC.TextTertiary
             )
             Spacer(modifier = Modifier.height(6.dp))
             Row(
@@ -478,37 +463,37 @@ private fun VehicleTabContent(
             ) {
                 Button(
                     onClick = onPlaybackClick,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                    colors = ButtonDefaults.buttonColors(containerColor = MC.AccentPrimary),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp), tint = MC.TextPrimary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Playback", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("Playback", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MC.TextPrimary)
                 }
 
                 OutlinedButton(
                     onClick = onSendCommandClick,
-                    border = BorderStroke(1.dp, Color(0xFF3B82F6)),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8)),
+                    border = BorderStroke(1.dp, MC.AccentPrimary),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MC.AccentPrimary),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.weight(1f)
                 ) {
                     Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Command", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("Command", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                 }
 
                 OutlinedButton(
                     onClick = onCenterMapClick,
-                    border = BorderStroke(1.dp, Color(0xFF475569)),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.LightGray),
+                    border = BorderStroke(1.dp, MC.Surface3),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MC.TextSecondary),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.weight(1f)
                 ) {
                     Icon(Icons.Default.GpsFixed, contentDescription = null, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Recenter", fontSize = 11.sp)
+                    Text("Recenter", style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
@@ -524,7 +509,7 @@ private fun MetricCard(
     modifier: Modifier = Modifier
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+        colors = CardDefaults.cardColors(containerColor = MC.Surface2),
         shape = RoundedCornerShape(10.dp),
         modifier = modifier
     ) {
@@ -536,16 +521,16 @@ private fun MetricCard(
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = Color(0xFF64748B),
+                    tint = MC.TextTertiary,
                     modifier = Modifier.size(12.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
-                Text(title, fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color(0xFF64748B))
+                Text(title, style = MaterialTheme.typography.labelSmall, color = MC.TextTertiary)
             }
             Text(
                 text = value,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.ExtraBold,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
                 color = valueColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -568,7 +553,7 @@ private fun DriverTabContent(
         // Driver Profile Card
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                colors = CardDefaults.cardColors(containerColor = MC.Surface2),
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -581,13 +566,13 @@ private fun DriverTabContent(
                             modifier = Modifier
                                 .size(56.dp)
                                 .clip(CircleShape)
-                                .background(Color(0xFF2563EB)),
+                                .background(MC.AccentPrimary),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Person,
                                 contentDescription = null,
-                                tint = Color.White,
+                                tint = MC.TextPrimary,
                                 modifier = Modifier.size(32.dp)
                             )
                         }
@@ -595,44 +580,40 @@ private fun DriverTabContent(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = driverName,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MC.TextPrimary
                             )
                             Text(
                                 text = "Assigned to: ${device.name}",
-                                fontSize = 11.sp,
-                                color = Color(0xFF38BDF8)
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MC.AccentPrimary
                             )
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(top = 4.dp)
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(Color(0xFF065F46))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
+                                StatusBadge(text = "ACTIVE SHIFT", color = MC.StatusOnline)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.Star,
+                                        contentDescription = null,
+                                        tint = MC.StatusIdle,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(2.dp))
                                     Text(
-                                        text = "ACTIVE SHIFT",
-                                        fontSize = 8.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF34D399)
+                                        text = "4.9 Safety Score",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MC.StatusIdle,
+                                        fontWeight = FontWeight.Bold
                                     )
                                 }
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "★ 4.9 Safety Score",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFFF59E0B),
-                                    fontWeight = FontWeight.Bold
-                                )
                             }
                         }
                     }
 
-                    HorizontalDivider(color = Color(0xFF334155), modifier = Modifier.padding(vertical = 12.dp))
+                    HorizontalDivider(color = MC.Surface3, modifier = Modifier.padding(vertical = 12.dp))
 
                     // Contact Info Details
                     Row(
@@ -641,18 +622,18 @@ private fun DriverTabContent(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text("PHONE NUMBER", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF64748B))
-                            Text(driverPhone, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Text("PHONE NUMBER", style = MaterialTheme.typography.labelSmall, color = MC.TextTertiary)
+                            Text(driverPhone, style = MaterialTheme.typography.titleSmall, color = MC.TextPrimary)
                         }
 
                         Button(
                             onClick = onCallDriver,
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                            colors = ButtonDefaults.buttonColors(containerColor = MC.StatusOnline),
                             shape = RoundedCornerShape(8.dp)
                         ) {
-                            Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(14.dp), tint = MC.TextPrimary)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Call Driver", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("Call Driver", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MC.TextPrimary)
                         }
                     }
                 }
@@ -662,33 +643,33 @@ private fun DriverTabContent(
         // Driver Specifications Card
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                colors = CardDefaults.cardColors(containerColor = MC.Surface2),
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("LICENSE & DUTY LOGS", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF64748B))
+                    Text("LICENSE & DUTY LOGS", style = MaterialTheme.typography.labelSmall, color = MC.TextTertiary)
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("License Class:", fontSize = 11.sp, color = Color.Gray)
-                        Text("Commercial Class IV (Heavy)", fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Medium)
+                        Text("License Class:", style = MaterialTheme.typography.bodySmall, color = MC.TextSecondary)
+                        Text("Commercial Class IV (Heavy)", style = MaterialTheme.typography.bodySmall, color = MC.TextPrimary, fontWeight = FontWeight.Medium)
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Driving Time Today:", fontSize = 11.sp, color = Color.Gray)
-                        Text("4h 25m / 8h Limit", fontSize = 11.sp, color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                        Text("Driving Time Today:", style = MaterialTheme.typography.bodySmall, color = MC.TextSecondary)
+                        Text("4h 25m / 8h Limit", style = MaterialTheme.typography.bodySmall, color = MC.AccentPrimary, fontWeight = FontWeight.Bold)
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Rest Break Status:", fontSize = 11.sp, color = Color.Gray)
-                        Text("Compliant (Next in 2h)", fontSize = 11.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Bold)
+                        Text("Rest Break Status:", style = MaterialTheme.typography.bodySmall, color = MC.TextSecondary)
+                        Text("Compliant (Next in 2h)", style = MaterialTheme.typography.bodySmall, color = MC.StatusOnline, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -708,7 +689,6 @@ private fun StatusUpdatesTabContent(
         else raw.replace("T", " ").replace("Z", "")
     }
 
-    // Generate clean telemetry status update timeline entries
     val eventsList = remember(recentEvents, device.id) {
         val devEvents = recentEvents.filter { it.deviceId == device.id }
         if (devEvents.isNotEmpty()) devEvents
@@ -725,17 +705,17 @@ private fun StatusUpdatesTabContent(
     ) {
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                colors = CardDefaults.cardColors(containerColor = MC.Surface2),
                 shape = RoundedCornerShape(10.dp)
             ) {
                 Row(
                     modifier = Modifier.padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.AccessTime, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.AccessTime, contentDescription = null, tint = MC.AccentPrimary, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Last Telemetry Sync: ", fontSize = 11.sp, color = Color.Gray)
-                    Text(formattedLastUpdate, fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Last Telemetry Sync: ", style = MaterialTheme.typography.bodySmall, color = MC.TextSecondary)
+                    Text(formattedLastUpdate, style = MaterialTheme.typography.bodySmall, color = MC.TextPrimary, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -752,13 +732,13 @@ private fun StatusUpdatesTabContent(
             }
 
             val eventColor = when {
-                event.type.contains("Online") || event.type.contains("Moving") -> Color(0xFF10B981)
-                event.type.contains("Offline") || event.type.contains("Stopped") -> Color(0xFFEF4444)
-                else -> Color(0xFF3B82F6)
+                event.type.contains("Online") || event.type.contains("Moving") -> MC.StatusOnline
+                event.type.contains("Offline") || event.type.contains("Stopped") -> MC.StatusOffline
+                else -> MC.AccentPrimary
             }
 
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                colors = CardDefaults.cardColors(containerColor = MC.Surface2),
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -778,16 +758,16 @@ private fun StatusUpdatesTabContent(
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
-                            Text(eventTypeTitle, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            Text("Asset: ${device.name} • Event ID #${event.id}", fontSize = 10.sp, color = Color.Gray)
+                            Text(eventTypeTitle, style = MaterialTheme.typography.titleSmall, color = MC.TextPrimary)
+                            Text("Asset: ${device.name} • Event ID #${event.id}", style = MaterialTheme.typography.labelSmall, color = MC.TextSecondary)
                         }
                     }
 
                     Text(
                         text = event.eventTime.takeLast(8).replace("Z", ""),
-                        fontSize = 10.sp,
+                        style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
-                        color = Color(0xFF94A3B8)
+                        color = MC.TextTertiary
                     )
                 }
             }

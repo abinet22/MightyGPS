@@ -14,8 +14,8 @@ android {
     applicationId = "com.aistudio.saasgpstracker.tzxuvy"
     minSdk = 24
     targetSdk = 35
-    versionCode = 34
-    versionName = "34.0"
+    versionCode = 36
+    versionName = "36.0"
 
     val mapsKey = (project.findProperty("GOOGLE_MAPS_API_KEY") as? String)
         ?: System.getenv("GOOGLE_MAPS_API_KEY")
