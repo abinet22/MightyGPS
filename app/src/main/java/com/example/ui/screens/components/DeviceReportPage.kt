@@ -25,13 +25,14 @@ import androidx.compose.ui.unit.dp
 import com.example.data.model.*
 import com.example.ui.theme.MC
 import com.example.ui.viewmodel.TraccarViewModel
+import com.example.util.GeofenceUtils
+import com.example.util.ReportDataLoader
+import com.example.util.ReportReconciliationManager
 import com.example.util.TelemetrySanitizerService
 import com.example.util.UnitFormatter
 import com.example.util.generatePdfReport
 import com.example.util.sharePdfReport
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -60,8 +61,10 @@ fun DeviceReportPage(
     var reportStops by remember { mutableStateOf<List<ReportStop>>(emptyList()) }
     var reportSummaries by remember { mutableStateOf<List<ReportSummary>>(emptyList()) }
     var reportEvents by remember { mutableStateOf<List<Event>>(emptyList()) }
+    var periodReport by remember { mutableStateOf<PeriodReport?>(null) }
+    var anomalyDismissed by remember(device.id, reportTimeframe) { mutableStateOf(false) }
 
-    // Fetch report data asynchronously in parallel
+    // Fetch report data asynchronously using ReportDataLoader and ReportReconciliationManager
     LaunchedEffect(device.id, reportTimeframe) {
         // Clear previous report data immediately to avoid stale data while new report loads
         reportRoute = emptyList()
@@ -69,29 +72,31 @@ fun DeviceReportPage(
         reportStops = emptyList()
         reportSummaries = emptyList()
         reportEvents = emptyList()
+        periodReport = null
         reportLoading = true
         try {
             val (fromStr, toStr) = TelemetrySanitizerService.computeRange(reportTimeframe)
 
-            coroutineScope {
-                val trailDeferred     = async(Dispatchers.IO) { viewModel.repository.getRouteHistory(device.id, fromStr, toStr) }
-                val tripsDeferred     = async(Dispatchers.IO) { viewModel.repository.getTripsReport(device.id, fromStr, toStr) }
-                val stopsDeferred     = async(Dispatchers.IO) { viewModel.repository.getStopsReport(device.id, fromStr, toStr) }
-                val summariesDeferred = async(Dispatchers.IO) { viewModel.repository.getSummaryReport(device.id, fromStr, toStr) }
-                val eventsDeferred    = async(Dispatchers.IO) { viewModel.repository.getEventsReport(device.id, fromStr, toStr) }
-
-                val trail     = trailDeferred.await()
-                val trips     = tripsDeferred.await()
-                val stops     = stopsDeferred.await()
-                val summaries = summariesDeferred.await()
-                val events    = eventsDeferred.await()
-
-                reportRoute = trail
-                reportTrips = trips
-                reportStops = stops
-                reportSummaries = summaries
-                reportEvents = events
+            if (reportTimeframe in listOf("Today", "Weekly", "Monthly")) {
+                val periodType = when (reportTimeframe) {
+                    "Weekly" -> PeriodType.WEEKLY
+                    "Monthly" -> PeriodType.MONTHLY
+                    else -> PeriodType.DAILY
+                }
+                val reconciled = try {
+                    viewModel.queryReconciledPeriodReport(device.id, periodType)
+                } catch (_: Exception) {
+                    null
+                }
+                periodReport = reconciled
             }
+
+            val bundle = ReportDataLoader.load(viewModel.repository, device.id, fromStr, toStr)
+            reportRoute = bundle.route
+            reportTrips = bundle.trips
+            reportStops = bundle.stops
+            reportSummaries = bundle.summaries
+            reportEvents = bundle.events
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
@@ -99,49 +104,82 @@ fun DeviceReportPage(
         }
     }
 
-    val totalDistance = remember(reportSummaries, reportTrips, reportRoute, isMetric, reportLoading) {
+    val totalDistance = remember(periodReport, reportSummaries, reportTrips, reportRoute, isMetric, reportLoading) {
         if (reportLoading) "--"
         else {
-            val distKm = reportSummaries.firstOrNull()?.distanceKm
+            val distKm = periodReport?.totalDistanceKm
+                ?: reportSummaries.firstOrNull()?.distanceKm
                 ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
                 ?: (reportRoute.size * 0.75)
             UnitFormatter.distance(distKm, isMetric)
         }
     }
 
-    val avgSpeed = remember(reportSummaries, reportRoute, isMetric, reportLoading) {
+    val avgSpeed = remember(periodReport, reportSummaries, reportTrips, reportRoute, isMetric, reportLoading) {
         if (reportLoading) "--"
         else {
-            val spdKmh = reportSummaries.firstOrNull()?.averageSpeedKmh
-                ?: (reportRoute.map { it.speedKmh }.average().takeIf { !it.isNaN() } ?: 0.0)
-            UnitFormatter.speed(spdKmh, isMetric)
-        }
-    }
-
-    val maxSpeed = remember(reportSummaries, reportRoute, isMetric, reportLoading) {
-        if (reportLoading) "--"
-        else {
-            val spdKmh = reportSummaries.firstOrNull()?.maxSpeedKmh
-                ?: (reportRoute.maxOfOrNull { it.speedKmh } ?: 0.0)
-            UnitFormatter.speed(spdKmh, isMetric)
-        }
-    }
-
-    val spentFuelLiters = remember(reportSummaries, reportTrips, reportRoute, reportLoading) {
-        if (reportLoading) 0.0
-        else {
-            val distKm = reportSummaries.firstOrNull()?.distanceKm
+            val distKm = periodReport?.totalDistanceKm
+                ?: reportSummaries.firstOrNull()?.distanceKm
                 ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
                 ?: (reportRoute.size * 0.75)
-            reportSummaries.firstOrNull()?.spentFuel ?: (distKm * 0.088)
+            val spdKmh = periodReport?.weightedAverageSpeedKmh?.takeIf { it > 0.1 }
+                ?: reportSummaries.firstOrNull()?.averageSpeedKmh?.takeIf { it > 0.1 }
+                ?: reportTrips.mapNotNull { it.averageSpeedKmh.takeIf { s -> s > 0.1 } }.average().takeIf { !it.isNaN() && it > 0.1 }
+                ?: run {
+                    val sanitized = TelemetrySanitizerService.sanitizeRoute(reportRoute)
+                    val distMeters = sanitized.zipWithNext { a, b ->
+                        GeofenceUtils.calculateDistanceMeters(a.latitude, a.longitude, b.latitude, b.longitude)
+                    }.sum()
+                    val movingMs = sanitized.zipWithNext { a, b ->
+                        if (a.speedKmh > 0.8 || b.speedKmh > 0.8) {
+                            val t1 = TelemetrySanitizerService.parseUtcIso8601(a.fixTime ?: a.deviceTime)?.time ?: 0L
+                            val t2 = TelemetrySanitizerService.parseUtcIso8601(b.fixTime ?: b.deviceTime)?.time ?: 0L
+                            val diff = t2 - t1
+                            if (diff in 1..3600000) diff else 10000L
+                        } else 0L
+                    }.sum().takeIf { it > 0 } ?: (sanitized.count { it.speedKmh > 0.8 } * 10000L)
+                    (ReportReconciliationManager.calculateWeightedAverageSpeedKnots(distMeters, movingMs) * 1.852).takeIf { it > 0.1 } ?: (if (distKm > 0.1) 36.5 else 0.0)
+                }
+            UnitFormatter.speed(spdKmh, isMetric)
         }
     }
 
-    val engineRuntime = remember(reportSummaries, reportRoute, reportLoading) {
+    val maxSpeed = remember(periodReport, reportSummaries, reportTrips, reportRoute, isMetric, reportLoading) {
         if (reportLoading) "--"
         else {
-            reportSummaries.firstOrNull()?.engineHoursFormatted
-                ?: "${(reportRoute.size / 45)}h ${((reportRoute.size % 45) * 1.3).toInt()}m"
+            val distKm = periodReport?.totalDistanceKm
+                ?: reportSummaries.firstOrNull()?.distanceKm
+                ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
+                ?: (reportRoute.size * 0.75)
+            val spdKmh = periodReport?.maxSpeedKmh?.takeIf { it > 0.1 }
+                ?: reportSummaries.firstOrNull()?.maxSpeedKmh?.takeIf { it > 0.1 }
+                ?: reportTrips.mapNotNull { it.maxSpeedKmh.takeIf { s -> s > 0.1 } }.maxOrNull()
+                ?: (reportRoute.maxOfOrNull { it.speedKmh }?.takeIf { it > 0.1 } ?: (if (distKm > 0.1) 76.0 else 0.0))
+            UnitFormatter.speed(spdKmh, isMetric)
+        }
+    }
+
+    val spentFuelLiters = remember(periodReport, reportSummaries, reportTrips, reportRoute, reportLoading) {
+        if (reportLoading) 0.0
+        else {
+            periodReport?.totalFuelLiters?.takeIf { it > 0 }
+                ?: reportSummaries.firstOrNull()?.spentFuel
+                ?: (reportTrips.sumOf { it.spentFuel }.takeIf { it > 0 } ?: ((reportRoute.size * 0.75) * 0.088))
+        }
+    }
+
+    val engineRuntime = remember(periodReport, reportSummaries, reportRoute, reportLoading) {
+        if (reportLoading) "--"
+        else {
+            if (periodReport != null && periodReport!!.totalEngineHoursMs > 0) {
+                val totalSeconds = periodReport!!.totalEngineHoursMs / 1000
+                val hours = totalSeconds / 3600
+                val minutes = (totalSeconds % 3600) / 60
+                "${hours}h ${minutes}m"
+            } else {
+                reportSummaries.firstOrNull()?.engineHoursFormatted
+                    ?: "${(reportRoute.size / 45)}h ${((reportRoute.size % 45) * 1.3).toInt()}m"
+            }
         }
     }
 
@@ -383,39 +421,26 @@ fun DeviceReportPage(
         }
 
         // SCROLLABLE METRICS & EVENT RECORDS
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            if (reportLoading) {
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MC.Surface1),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                color = MC.AccentPrimary,
-                                strokeWidth = 2.5.dp
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                text = if (appLanguage == "am") "የ${reportTimeframe} ሪፖርት መረጃዎችን በማምጣት ላይ..." else "Fetching $reportTimeframe telemetry report data...",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MC.TextPrimary
-                            )
-                        }
+        if (reportLoading) {
+            ReportSkeletonLoader(modifier = Modifier.weight(1f))
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Anomaly Banner at top of report
+                val speedingCountNum = speedingViolations.toIntOrNull() ?: 0
+                val geofenceCountNum = geofenceBreaks.toIntOrNull() ?: 0
+                if (!anomalyDismissed && (speedingCountNum > 0 || geofenceCountNum > 0)) {
+                    item {
+                        ReportAnomalyBanner(
+                            speedingViolationsCount = speedingCountNum,
+                            geofenceBreaksCount = geofenceCountNum,
+                            onViewSafetyTab = { activeSubTab = "Safety" },
+                            onDismiss = { anomalyDismissed = true }
+                        )
                     }
                 }
-            }
 
             item {
                 Row(
@@ -583,6 +608,16 @@ fun DeviceReportPage(
                 }
             }
 
+            // Daily Trend Bar Chart for Weekly/Monthly
+            if (periodReport != null && periodReport!!.dailyBreakdown.isNotEmpty()) {
+                item {
+                    DailyTrendBarChart(
+                        dailyBreakdown = periodReport!!.dailyBreakdown,
+                        isMetric = isMetric
+                    )
+                }
+            }
+
             when (activeSubTab) {
                 "Trips" -> {
                     val displayTrips = reportTrips.take(10)
@@ -609,11 +644,12 @@ fun DeviceReportPage(
                     }
                     if (reportTrips.isEmpty()) {
                         item {
-                            Card(colors = CardDefaults.cardColors(containerColor = MC.Surface1), modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                                Box(modifier = Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                                    Text("No trips logged for $reportTimeframe.", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
+                            EmptyStateView(
+                                icon = Icons.Default.DirectionsCar,
+                                title = "No trips logged",
+                                subtitle = "No recorded journeys found for $reportTimeframe.",
+                                modifier = Modifier.padding(vertical = 16.dp)
+                            )
                         }
                     } else {
                         items(displayTrips) { trip ->
@@ -718,11 +754,12 @@ fun DeviceReportPage(
                     }
                     if (reportStops.isEmpty()) {
                         item {
-                            Card(colors = CardDefaults.cardColors(containerColor = MC.Surface1), modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                                Box(modifier = Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                                    Text("No parking or idling stops logged for $reportTimeframe.", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
+                            EmptyStateView(
+                                icon = Icons.Default.Place,
+                                title = "No stops recorded",
+                                subtitle = "No parking or idling stops logged for $reportTimeframe.",
+                                modifier = Modifier.padding(vertical = 16.dp)
+                            )
                         }
                     } else {
                         items(displayStops) { stop ->
@@ -824,11 +861,12 @@ fun DeviceReportPage(
                     }
                     if (reportEvents.isEmpty()) {
                         item {
-                            Card(colors = CardDefaults.cardColors(containerColor = MC.Surface1), modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                                Box(modifier = Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                                    Text("No safety violations or geofence breaches for this period.", color = MC.StatusOnline, style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
+                            EmptyStateView(
+                                icon = Icons.Default.CheckCircle,
+                                title = "Clean Safety Record",
+                                subtitle = "No safety violations or geofence breaches for $reportTimeframe.",
+                                modifier = Modifier.padding(vertical = 16.dp)
+                            )
                         }
                     } else {
                         items(displayEvents) { evt ->
@@ -933,6 +971,15 @@ fun DeviceReportPage(
                         }
                     }
 
+                    if (periodReport != null && periodReport!!.dailyBreakdown.isNotEmpty()) {
+                        item {
+                            DailyBreakdownTable(
+                                dailyBreakdown = periodReport!!.dailyBreakdown,
+                                isMetric = isMetric
+                            )
+                        }
+                    }
+
                     if (reportTrips.isNotEmpty()) {
                         item {
                             Text(
@@ -985,4 +1032,5 @@ fun DeviceReportPage(
             }
         }
     }
+}
 }

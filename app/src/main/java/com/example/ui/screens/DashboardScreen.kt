@@ -36,6 +36,7 @@ import com.example.data.model.ReportSummary
 import com.example.data.model.ReportTrip
 import com.example.data.model.ReportStop
 import com.example.data.model.Event
+import com.example.ui.theme.MC
 import java.util.Calendar
 
 import com.example.ui.map.SlippyMap
@@ -174,7 +175,6 @@ fun DashboardScreen(
         ) 
     }
 
-    var geofenceStatuses by remember { mutableStateOf(emptyMap<String, Boolean>()) }
     var activeGeofenceAlerts by remember { mutableStateOf(emptyList<GeofenceAlert>()) }
     var geofenceAlertHistory by remember { mutableStateOf(emptyList<GeofenceAlert>()) }
 
@@ -279,71 +279,14 @@ fun DashboardScreen(
         animatedPlaybackCourse = target.course.toFloat()
     }
 
-    LaunchedEffect(selectedDeviceId, realtimePositions, geofences, isPlaybackActive, playbackStepIndex, routeHistory, animatedPlaybackLat, animatedPlaybackLng) {
-        val activePlaybackPos = if (routeHistory.isNotEmpty() && playbackStepIndex < routeHistory.size) {
-            routeHistory[playbackStepIndex]
-        } else null
+    LaunchedEffect(isPlaybackActive) {
+        viewModel.setPlaybackActive(isPlaybackActive)
+    }
 
-        val currentPos = if (isPlaybackActive && activePlaybackPos != null) {
-            activePlaybackPos
-        } else {
-            selectedDeviceId?.let { realtimePositions[it] }
-        }
-        
-        val currentLat = if (isPlaybackActive && animatedPlaybackLat != null) animatedPlaybackLat!! else currentPos?.latitude
-        val currentLng = if (isPlaybackActive && animatedPlaybackLng != null) animatedPlaybackLng!! else currentPos?.longitude
-
-        if (currentLat != null && currentLng != null && geofences.isNotEmpty()) {
-            val devId = activePlaybackPos?.deviceId ?: selectedDeviceId ?: 0L
-            val devName = devices.find { it.id == devId }?.name ?: "Vehicle #$devId"
-            val newStatuses = mutableMapOf<String, Boolean>()
-            val triggered = mutableListOf<GeofenceAlert>()
-            
-            for (gf in geofences) {
-                val lat1 = currentLat
-                val lon1 = currentLng
-                val lat2 = gf.latitude
-                val lon2 = gf.longitude
-                val r = 6371000.0 // meters
-                val dLat = Math.toRadians(lat2 - lat1)
-                val dLon = Math.toRadians(lon2 - lon1)
-                val a = Math.sin(dLat / 2.0) * Math.sin(dLat / 2.0) +
-                        Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
-                        Math.sin(dLon / 2.0) * Math.sin(dLon / 2.0)
-                val c = 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a))
-                val dist = r * c
-
-                val isInside = dist <= gf.radiusMeters
-                val hadPrevious = geofenceStatuses.containsKey(gf.id)
-                if (hadPrevious) {
-                    val wasInside = geofenceStatuses[gf.id] ?: false
-                    if (isInside && !wasInside) {
-                        triggered.add(
-                            GeofenceAlert(
-                                deviceName = devName,
-                                geofenceName = gf.name,
-                                type = "ENTERED"
-                            )
-                        )
-                    } else if (!isInside && wasInside) {
-                        triggered.add(
-                            GeofenceAlert(
-                                deviceName = devName,
-                                geofenceName = gf.name,
-                                type = "EXITED"
-                            )
-                        )
-                    }
-                }
-                newStatuses[gf.id] = isInside
-            }
-            geofenceStatuses = newStatuses
-            if (triggered.isNotEmpty()) {
-                activeGeofenceAlerts = activeGeofenceAlerts + triggered
-                geofenceAlertHistory = triggered + geofenceAlertHistory
-            }
-        } else if (!isPlaybackActive) {
-            geofenceStatuses = emptyMap()
+    LaunchedEffect(Unit) {
+        viewModel.geofenceAlertEvents.collect { alert ->
+            activeGeofenceAlerts = activeGeofenceAlerts + alert
+            geofenceAlertHistory = listOf(alert) + geofenceAlertHistory
         }
     }
 
@@ -421,7 +364,7 @@ fun DashboardScreen(
                                 } else if (currentTab == 5) "Settings & Preferences" else "MightyGPS Fleet Control",
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.ExtraBold,
-                                color = Color(0xFF60A5FA)
+                                color = MC.AccentPrimary
                             )
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 if (isSyncing) {
@@ -429,7 +372,7 @@ fun DashboardScreen(
                                         modifier = Modifier
                                             .size(6.dp)
                                             .background(
-                                                Color(0xFF60A5FA),
+                                                MC.AccentPrimary,
                                                 shape = CircleShape
                                             )
                                     )
@@ -437,7 +380,7 @@ fun DashboardScreen(
                                     Text(
                                         text = "Refreshing Assets...",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFF60A5FA),
+                                        color = MC.AccentPrimary,
                                         fontWeight = FontWeight.Bold
                                     )
                                 } else {
@@ -446,7 +389,7 @@ fun DashboardScreen(
                                         modifier = Modifier
                                             .size(6.dp)
                                             .background(
-                                                if (isSocketConnected) Color(0xFF10B981) else Color(0xFFEF4444),
+                                                if (isSocketConnected) MC.StatusOnline else MC.StatusOffline,
                                                 shape = CircleShape
                                             )
                                     )
@@ -454,23 +397,23 @@ fun DashboardScreen(
                                     Text(
                                         text = if (isSocketConnected) "Live Telemetry Connected" else "Reconnecting Gateway",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFF94A3B8)
+                                        color = MC.TextSecondary
                                     )
                                 }
                             }
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color(0xFF0F172A),
-                        titleContentColor = Color.White
+                        containerColor = MC.Surface1,
+                        titleContentColor = MC.TextPrimary
                     )
                 )
             }
         },
         bottomBar = {
             NavigationBar(
-                containerColor = Color(0xFF0F172A),
-                contentColor = Color.LightGray,
+                containerColor = MC.Surface1,
+                contentColor = MC.TextSecondary,
                 tonalElevation = 6.dp
             ) {
                 NavigationBarItem(
@@ -479,11 +422,11 @@ fun DashboardScreen(
                     icon = { Icon(Icons.Default.LocationOn, contentDescription = "Fleet tracking Map") },
                     label = { Text(viewModel.translate("active_fleet"), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold) },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = Color(0xFF3B82F6),
-                        selectedTextColor = Color.White,
-                        unselectedIconColor = Color(0xFF64748B),
-                        unselectedTextColor = Color(0xFF64748B),
-                        indicatorColor = Color(0xFF1E293B)
+                        selectedIconColor = MC.AccentPrimary,
+                        selectedTextColor = MC.TextPrimary,
+                        unselectedIconColor = MC.TextTertiary,
+                        unselectedTextColor = MC.TextTertiary,
+                        indicatorColor = MC.Surface2
                     )
                 )
                 NavigationBarItem(
@@ -492,11 +435,11 @@ fun DashboardScreen(
                     icon = { Icon(Icons.Default.List, contentDescription = "Reports") },
                     label = { Text(if (viewModel.appLanguage.value == "es") "Reportes" else if (viewModel.appLanguage.value == "am") "ሪፖርቶች" else "Reports", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold) },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = Color(0xFF3B82F6),
-                        selectedTextColor = Color.White,
-                        unselectedIconColor = Color(0xFF64748B),
-                        unselectedTextColor = Color(0xFF64748B),
-                        indicatorColor = Color(0xFF1E293B)
+                        selectedIconColor = MC.AccentPrimary,
+                        selectedTextColor = MC.TextPrimary,
+                        unselectedIconColor = MC.TextTertiary,
+                        unselectedTextColor = MC.TextTertiary,
+                        indicatorColor = MC.Surface2
                     )
                 )
                 NavigationBarItem(
@@ -505,11 +448,11 @@ fun DashboardScreen(
                     icon = { Icon(Icons.Default.Settings, contentDescription = "App Customizer") },
                     label = { Text(viewModel.translate("settings"), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold) },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = Color(0xFF3B82F6),
-                        selectedTextColor = Color.White,
-                        unselectedIconColor = Color(0xFF64748B),
-                        unselectedTextColor = Color(0xFF64748B),
-                        indicatorColor = Color(0xFF1E293B)
+                        selectedIconColor = MC.AccentPrimary,
+                        selectedTextColor = MC.TextPrimary,
+                        unselectedIconColor = MC.TextTertiary,
+                        unselectedTextColor = MC.TextTertiary,
+                        indicatorColor = MC.Surface2
                     )
                 )
             }
@@ -517,7 +460,7 @@ fun DashboardScreen(
         floatingActionButton = {
             // Disabled: Customers requested removing add/remove device options for security
         },
-        containerColor = Color(0xFF020617)
+        containerColor = MC.Surface0
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -547,11 +490,12 @@ fun DashboardScreen(
                                 enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
                                 exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut()
                             ) {
+                                val alertColor = if (alert.type == "ENTERED") MC.StatusOnline else MC.StatusOffline
                                 Card(
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (alert.type == "ENTERED") Color(0xFF064E3B) else Color(0xFF7F1D1D)
+                                        containerColor = MC.Surface1
                                     ),
-                                    border = BorderStroke(1.5.dp, if (alert.type == "ENTERED") Color(0xFF10B981) else Color(0xFFEF4444)),
+                                    border = BorderStroke(1.dp, alertColor.copy(alpha = 0.45f)),
                                     shape = RoundedCornerShape(12.dp),
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -565,15 +509,15 @@ fun DashboardScreen(
                                             modifier = Modifier
                                                 .size(36.dp)
                                                 .background(
-                                                    if (alert.type == "ENTERED") Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEF4444).copy(alpha = 0.2f),
+                                                    alertColor.copy(alpha = 0.15f),
                                                     shape = CircleShape
                                                 ),
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
                                                 imageVector = if (alert.type == "ENTERED") Icons.Default.CheckCircle else Icons.Default.Warning,
-                                                contentDescription = null,
-                                                tint = if (alert.type == "ENTERED") Color(0xFF10B981) else Color(0xFFEF4444),
+                                                contentDescription = "Geofence Status Alert",
+                                                tint = alertColor,
                                                 modifier = Modifier.size(20.dp)
                                             )
                                         }
@@ -586,29 +530,40 @@ fun DashboardScreen(
                                                 horizontalArrangement = Arrangement.SpaceBetween,
                                                 modifier = Modifier.fillMaxWidth()
                                             ) {
-                                                Text(
-                                                    text = if (alert.type == "ENTERED") "GEOFENCE ENTERED 🟢" else "GEOFENCE EXITED 🔴",
-                                                    color = if (alert.type == "ENTERED") Color(0xFF34D399) else Color(0xFFF87171),
-                                                    fontWeight = FontWeight.ExtraBold,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    letterSpacing = 1.sp
-                                                )
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(6.dp)
+                                                            .clip(CircleShape)
+                                                            .background(alertColor)
+                                                    )
+                                                    Text(
+                                                        text = if (alert.type == "ENTERED") "GEOFENCE ENTERED" else "GEOFENCE EXITED",
+                                                        color = alertColor,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        letterSpacing = 1.sp
+                                                    )
+                                                }
                                                 Text(
                                                     text = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(alert.timestamp)),
-                                                    color = Color.LightGray.copy(alpha = 0.6f),
+                                                    color = MC.TextTertiary,
                                                     style = MaterialTheme.typography.labelSmall
                                                 )
                                             }
                                             Spacer(modifier = Modifier.height(4.dp))
                                             Text(
                                                 text = if (alert.type == "ENTERED") "${alert.deviceName} arrived inside ${alert.geofenceName}" else "${alert.deviceName} exited ${alert.geofenceName}",
-                                                color = Color.White,
+                                                color = MC.TextPrimary,
                                                 fontWeight = FontWeight.SemiBold,
                                                 style = MaterialTheme.typography.bodyMedium
                                             )
                                             Text(
                                                 text = if (alert.type == "ENTERED") "Safe boundary crossed successfully." else "Security notice: Fleet asset left zone.",
-                                                color = Color.LightGray,
+                                                color = MC.TextSecondary,
                                                 style = MaterialTheme.typography.bodySmall
                                             )
                                         }
@@ -624,7 +579,7 @@ fun DashboardScreen(
                                             Icon(
                                                 imageVector = Icons.Default.Close,
                                                 contentDescription = "Dismiss",
-                                                tint = Color.White.copy(alpha = 0.8f),
+                                                tint = MC.TextSecondary,
                                                 modifier = Modifier.size(16.dp)
                                             )
                                         }
@@ -646,11 +601,11 @@ fun DashboardScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Color(0xFF0F172A))
+                            .background(MC.Surface1)
                     ) {
                         LinearProgressIndicator(
-                            color = Color(0xFF60A5FA),
-                            trackColor = Color(0xFF1E293B),
+                            color = MC.AccentPrimary,
+                            trackColor = MC.Surface2,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(3.dp)
@@ -667,11 +622,11 @@ fun DashboardScreen(
                     syncError?.let { err ->
                         Card(
                             colors = CardDefaults.cardColors(
-                                containerColor = Color(0xFF7F1D1D), // Deep dark Red
+                                containerColor = MC.Surface1,
                                 contentColor = Color(0xFFFCA5A5)
                             ),
                             shape = MaterialTheme.shapes.small,
-                            border = BorderStroke(1.dp, Color(0xFFB91C1C)),
+                            border = BorderStroke(1.dp, MC.StatusOffline.copy(alpha = 0.5f)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(12.dp)
@@ -686,14 +641,14 @@ fun DashboardScreen(
                                         Icon(
                                             imageVector = Icons.Default.Warning,
                                             contentDescription = "Sync Error",
-                                            tint = Color(0xFFEF4444)
+                                            tint = MC.StatusOffline
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
                                             text = "Sync / Connection Alert",
                                             fontWeight = FontWeight.ExtraBold,
                                             style = MaterialTheme.typography.bodyMedium,
-                                            color = Color.White
+                                            color = MC.TextPrimary
                                         )
                                     }
                                     IconButton(
@@ -703,7 +658,7 @@ fun DashboardScreen(
                                         Icon(
                                             imageVector = Icons.Default.Close,
                                             contentDescription = "Dismiss",
-                                            tint = Color(0xFFFCA5A5),
+                                            tint = MC.TextSecondary,
                                             modifier = Modifier.size(16.dp)
                                         )
                                     }
@@ -712,6 +667,7 @@ fun DashboardScreen(
                                 Text(
                                     text = err,
                                     style = MaterialTheme.typography.bodySmall,
+                                    color = MC.TextSecondary,
                                     modifier = Modifier.padding(start = 32.dp)
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
@@ -724,20 +680,20 @@ fun DashboardScreen(
                                             viewModel.clearSyncError()
                                             currentTab = 6
                                         },
-                                        colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFF59E0B))
+                                        colors = ButtonDefaults.textButtonColors(contentColor = MC.StatusIdle)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Star,
-                                            contentDescription = null,
+                                            contentDescription = "Reports",
                                             modifier = Modifier.size(14.dp),
-                                            tint = Color(0xFFF59E0B)
+                                            tint = MC.StatusIdle
                                         )
                                         Spacer(modifier = Modifier.width(4.dp))
                                         Text(
                                             text = "Go to Reports",
                                             style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.Bold,
-                                            color = Color(0xFFF59E0B)
+                                            color = MC.StatusIdle
                                         )
                                     }
                                     Spacer(modifier = Modifier.width(8.dp))
@@ -746,20 +702,20 @@ fun DashboardScreen(
                                             viewModel.clearSyncError()
                                             viewModel.fetchInitialState()
                                         },
-                                        colors = ButtonDefaults.textButtonColors(contentColor = Color.White)
+                                        colors = ButtonDefaults.textButtonColors(contentColor = MC.TextPrimary)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Refresh,
-                                            contentDescription = null,
+                                            contentDescription = "Retry",
                                             modifier = Modifier.size(14.dp),
-                                            tint = Color.White
+                                            tint = MC.TextPrimary
                                         )
                                         Spacer(modifier = Modifier.width(4.dp))
                                         Text(
                                             text = "Retry Sync",
                                             style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.Bold,
-                                            color = Color.White
+                                            color = MC.TextPrimary
                                         )
                                     }
                                 }
@@ -776,7 +732,8 @@ fun DashboardScreen(
                 ) {
                     feedbackMessage?.let {
                         Card(
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E3A8A)),
+                            colors = CardDefaults.cardColors(containerColor = MC.Surface2),
+                            border = BorderStroke(1.dp, MC.AccentPrimary.copy(alpha = 0.5f)),
                             shape = MaterialTheme.shapes.small,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -784,7 +741,7 @@ fun DashboardScreen(
                         ) {
                             Text(
                                 text = it,
-                                color = Color(0xFFBFDBFE),
+                                color = MC.AccentPrimary,
                                 style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.padding(12.dp),
                                 fontWeight = FontWeight.Bold
@@ -1063,17 +1020,17 @@ fun DashboardScreen(
                             newDevicePlate = ""
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
+                    colors = ButtonDefaults.buttonColors(containerColor = MC.AccentPrimary)
                 ) {
-                    Text("Provision Node", fontWeight = FontWeight.Bold)
+                    Text("Provision Node", fontWeight = FontWeight.Bold, color = MC.TextPrimary)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showAddDeviceSheet = false }) {
-                    Text("Abort", color = Color.LightGray)
+                    Text("Abort", color = MC.TextSecondary)
                 }
             },
-            containerColor = Color(0xFF1E293B)
+            containerColor = MC.Surface1
         )
     }
 

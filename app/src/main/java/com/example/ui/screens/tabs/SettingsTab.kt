@@ -407,12 +407,12 @@ fun SettingsTab(
                 color = MC.TextPrimary
             )
             val iconPresets = listOf(
-                "pin" to "Pin",
-                "car" to "Car",
-                "truck" to "Truck",
-                "bike" to "Bike",
-                "arrow" to "Arrow",
-                "custom" to "Custom Photo"
+                Triple("car", "Car", Icons.Default.DirectionsCar),
+                Triple("truck", "Truck", Icons.Default.LocalShipping),
+                Triple("bike", "Bike", Icons.Default.TwoWheeler),
+                Triple("pin", "Pin", Icons.Default.Place),
+                Triple("arrow", "Arrow", Icons.Default.Navigation),
+                Triple("custom", "Custom Photo", Icons.Default.Image)
             )
             Row(
                 modifier = Modifier
@@ -420,11 +420,19 @@ fun SettingsTab(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                iconPresets.forEach { (iconKey, label) ->
+                iconPresets.forEach { (iconKey, label, iconVector) ->
                     val isSelected = markerIconStyle == iconKey
                     FilterChip(
                         selected = isSelected,
                         onClick = { viewModel.setMarkerIconStyle(iconKey) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = iconVector,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (isSelected) MC.TextPrimary else MC.TextSecondary
+                            )
+                        },
                         label = { Text(label, style = MaterialTheme.typography.labelSmall, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = MC.AccentPrimary,

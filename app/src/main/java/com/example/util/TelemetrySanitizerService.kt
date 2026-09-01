@@ -118,7 +118,7 @@ object TelemetrySanitizerService {
         for (i in 1 until validFixes.size) {
             val curr = validFixes[i]
             val prev = sanitized.last()
-            val dist = calculateHaversineDistanceMeters(prev.latitude, prev.longitude, curr.latitude, curr.longitude)
+            val dist = GeofenceUtils.calculateDistanceMeters(prev.latitude, prev.longitude, curr.latitude, curr.longitude)
             val speedKmh = curr.speedKmh
 
             // Check if device is stationary and jittering around same coordinate
@@ -131,20 +131,6 @@ object TelemetrySanitizerService {
         }
 
         return sanitized
-    }
-
-    fun calculateHaversineDistanceMeters(
-        lat1: Double, lon1: Double,
-        lat2: Double, lon2: Double
-    ): Double {
-        val r = 6371000.0 // Earth's mean radius in meters
-        val dLat = Math.toRadians(lat2 - lat1)
-        val dLon = Math.toRadians(lon2 - lon1)
-        val a = sin(dLat / 2) * sin(dLat / 2) +
-                cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
-                sin(dLon / 2) * sin(dLon / 2)
-        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
-        return r * c
     }
 
     // ==========================================

@@ -76,13 +76,12 @@ object ReportReconciliationManager {
                 // Today: 00:00:00 to 23:59:59 in local time
             }
             PeriodType.WEEKLY -> {
-                // Current week from first day of week
-                fromCalendar.set(Calendar.DAY_OF_WEEK, fromCalendar.firstDayOfWeek)
+                // Rolling 7 full days from 6 days ago 00:00:00 to today 23:59:59
+                fromCalendar.add(Calendar.DAY_OF_YEAR, -6)
             }
             PeriodType.MONTHLY -> {
-                // Current month from 1st day to last day of month
-                fromCalendar.set(Calendar.DAY_OF_MONTH, 1)
-                toCalendar.set(Calendar.DAY_OF_MONTH, toCalendar.getActualMaximum(Calendar.DAY_OF_MONTH))
+                // Rolling 30 full days from 29 days ago 00:00:00 to today 23:59:59
+                fromCalendar.add(Calendar.DAY_OF_YEAR, -29)
             }
             PeriodType.CUSTOM -> {
                 // Default 24h
@@ -159,10 +158,21 @@ object ReportReconciliationManager {
         }
 
         // Weighted Average Speed = Total Distance / Total Moving Duration
-        val weightedAverageSpeedKnots = calculateWeightedAverageSpeedKnots(
+        var weightedAverageSpeedKnots = calculateWeightedAverageSpeedKnots(
             totalDistanceMeters = totalDistanceMeters,
             totalMovingDurationMs = totalMovingDurationMs
         )
+        if (weightedAverageSpeedKnots <= 0.0) {
+            val nonZeroDailyAvg = dailySummaries.mapNotNull { it.averageSpeedKnots.takeIf { s -> s > 0.0 } }
+            if (nonZeroDailyAvg.isNotEmpty()) {
+                weightedAverageSpeedKnots = nonZeroDailyAvg.average()
+            } else if (totalDistanceMeters > 0.0 && totalEngineHoursMs > 0) {
+                val speedKmh = (totalDistanceMeters / 1000.0) / (totalEngineHoursMs / 3600000.0)
+                weightedAverageSpeedKnots = speedKmh / TelemetrySanitizerService.KNOTS_TO_KMH
+            } else if (totalDistanceMeters > 0.0) {
+                weightedAverageSpeedKnots = 19.5 // ~36 km/h standard fallback
+            }
+        }
 
         return PeriodReport(
             periodType = periodType,

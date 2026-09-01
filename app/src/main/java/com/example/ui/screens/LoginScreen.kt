@@ -29,6 +29,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.ui.theme.MC
 import com.example.ui.viewmodel.AuthUIState
 import com.example.ui.viewmodel.TraccarViewModel
 
@@ -62,8 +63,8 @@ fun LoginScreen(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color(0xFF0F172A), // Slate 900
-                        Color(0xFF020617)  // Slate 950
+                        MC.Surface1,
+                        MC.Surface0
                     )
                 )
             )
@@ -77,7 +78,7 @@ fun LoginScreen(
                 var x = 0
                 while (x <= w) {
                     drawLine(
-                        color = Color(0x0A94A3B8),
+                        color = MC.Surface3.copy(alpha = 0.15f),
                         start = androidx.compose.ui.geometry.Offset(x.toFloat(), 0f),
                         end = androidx.compose.ui.geometry.Offset(x.toFloat(), size.height),
                         strokeWidth = 2f
@@ -87,7 +88,7 @@ fun LoginScreen(
                 var y = 0
                 while (y <= h) {
                     drawLine(
-                        color = Color(0x0A94A3B8),
+                        color = MC.Surface3.copy(alpha = 0.15f),
                         start = androidx.compose.ui.geometry.Offset(0f, y.toFloat()),
                         end = androidx.compose.ui.geometry.Offset(size.width, y.toFloat()),
                         strokeWidth = 2f
@@ -123,7 +124,7 @@ fun LoginScreen(
             // Branding labels
             Text(
                 text = "MIGHTY GPS",
-                color = Color.White,
+                color = MC.TextPrimary,
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Black,
                 letterSpacing = 1.5.sp,
@@ -135,7 +136,8 @@ fun LoginScreen(
             // Auth Error reporting banner
             if (authState is AuthUIState.Error) {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF452222)),
+                    colors = CardDefaults.cardColors(containerColor = MC.Surface2),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MC.StatusOffline.copy(alpha = 0.5f)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 16.dp)
@@ -147,7 +149,7 @@ fun LoginScreen(
                         Icon(
                             imageVector = Icons.Default.Warning,
                             contentDescription = "Error notification",
-                            tint = Color(0xFFEF4444)
+                            tint = MC.StatusOffline
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
@@ -165,16 +167,16 @@ fun LoginScreen(
                 onValueChange = { email = it },
                 label = { Text("Enterprise Email ID") },
                 leadingIcon = {
-                    Icon(Icons.Default.Email, contentDescription = "Registered email", tint = Color(0xFF3B82F6))
+                    Icon(Icons.Default.Email, contentDescription = "Registered email", tint = MC.AccentPrimary)
                 },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedLabelColor = Color(0xFF3B82F6),
-                    unfocusedLabelColor = Color(0xFF94A3B8),
-                    focusedBorderColor = Color(0xFF3B82F6),
-                    unfocusedBorderColor = Color(0xFF334155)
+                    focusedTextColor = MC.TextPrimary,
+                    unfocusedTextColor = MC.TextPrimary,
+                    focusedLabelColor = MC.AccentPrimary,
+                    unfocusedLabelColor = MC.TextSecondary,
+                    focusedBorderColor = MC.AccentPrimary,
+                    unfocusedBorderColor = MC.Surface3
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -187,26 +189,26 @@ fun LoginScreen(
                 onValueChange = { password = it },
                 label = { Text("Access Password") },
                 leadingIcon = {
-                    Icon(Icons.Default.Lock, contentDescription = "Password token", tint = Color(0xFF3B82F6))
+                    Icon(Icons.Default.Lock, contentDescription = "Password token", tint = MC.AccentPrimary)
                 },
                 trailingIcon = {
                     IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
                         Icon(
                             imageVector = if (isPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                             contentDescription = "Toggle password readability",
-                            tint = Color.Gray
+                            tint = MC.TextSecondary
                         )
                     }
                 },
                 visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedLabelColor = Color(0xFF3B82F6),
-                    unfocusedLabelColor = Color(0xFF94A3B8),
-                    focusedBorderColor = Color(0xFF3B82F6),
-                    unfocusedBorderColor = Color(0xFF334155)
+                    focusedTextColor = MC.TextPrimary,
+                    unfocusedTextColor = MC.TextPrimary,
+                    focusedLabelColor = MC.AccentPrimary,
+                    unfocusedLabelColor = MC.TextSecondary,
+                    focusedBorderColor = MC.AccentPrimary,
+                    unfocusedBorderColor = MC.Surface3
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -222,8 +224,8 @@ fun LoginScreen(
                 enabled = authState != AuthUIState.Loading,
                 shape = MaterialTheme.shapes.medium,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF2563EB),
-                    disabledContainerColor = Color(0xFF1D4ED8)
+                    containerColor = MC.AccentPrimary,
+                    disabledContainerColor = MC.AccentPrimary.copy(alpha = 0.5f)
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -231,7 +233,7 @@ fun LoginScreen(
             ) {
                 if (authState == AuthUIState.Loading) {
                     CircularProgressIndicator(
-                        color = Color.White,
+                        color = MC.TextPrimary,
                         modifier = Modifier.size(24.dp)
                     )
                 } else {
@@ -239,10 +241,11 @@ fun LoginScreen(
                         Text(
                             text = "LOGIN",
                             fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
+                            letterSpacing = 1.sp,
+                            color = MC.TextPrimary
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Icon(Icons.Default.ArrowForward, contentDescription = "Enter portal")
+                        Icon(Icons.Default.ArrowForward, contentDescription = "Enter portal", tint = MC.TextPrimary)
                     }
                 }
             }
@@ -257,9 +260,9 @@ fun LoginScreen(
                     }
                     context.startActivity(intent)
                 },
-                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF60A5FA))
+                colors = ButtonDefaults.textButtonColors(contentColor = MC.AccentPrimary)
             ) {
-                Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.BugReport, contentDescription = "Diagnostics", modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = "View App Logs & Error Diagnostics",
@@ -273,7 +276,7 @@ fun LoginScreen(
             // Informative Footnotes
             Text(
                 text = "Secure Connection Ensured via TLS Standard Proxy",
-                color = Color(0xFF475569),
+                color = MC.TextTertiary,
                 style = MaterialTheme.typography.labelSmall,
                 textAlign = TextAlign.Center
             )

@@ -10,8 +10,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -23,16 +25,22 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.data.model.*
+import com.example.ui.screens.components.DailyBreakdownTable
+import com.example.ui.screens.components.DailyTrendBarChart
+import com.example.ui.screens.components.EmptyStateView
 import com.example.ui.screens.components.MetricBox
+import com.example.ui.screens.components.ReportAnomalyBanner
+import com.example.ui.screens.components.ReportSkeletonLoader
 import com.example.ui.theme.MC
 import com.example.ui.viewmodel.TraccarViewModel
+import com.example.util.GeofenceUtils
+import com.example.util.ReportDataLoader
+import com.example.util.ReportReconciliationManager
 import com.example.util.TelemetrySanitizerService
 import com.example.util.UnitFormatter
 import com.example.util.generatePdfReport
 import com.example.util.sharePdfReport
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -76,6 +84,7 @@ fun ReportsTab(
         var stopResults by remember { mutableStateOf<List<ReportStop>>(emptyList()) }
         var routeResults by remember { mutableStateOf<List<Position>>(emptyList()) }
         var eventResults by remember { mutableStateOf<List<Event>>(emptyList()) }
+        var periodReport by remember { mutableStateOf<PeriodReport?>(null) }
         var reportLoading by remember { mutableStateOf(false) }
 
         val loadReportForAssetAndTimeframe: (Long, String) -> Unit = { devId, timeframe ->
@@ -85,32 +94,34 @@ fun ReportsTab(
             stopResults = emptyList()
             routeResults = emptyList()
             eventResults = emptyList()
+            periodReport = null
             reportLoading = true
             scope.launch {
                 try {
                     val (fromStr, toStr) = TelemetrySanitizerService.computeRange(timeframe)
 
-                    coroutineScope {
-                        val sumsDeferred   = async(Dispatchers.IO) { viewModel.repository.getSummaryReport(devId, fromStr, toStr) }
-                        val tripsDeferred  = async(Dispatchers.IO) { viewModel.repository.getTripsReport(devId, fromStr, toStr) }
-                        val stopsDeferred  = async(Dispatchers.IO) { viewModel.repository.getStopsReport(devId, fromStr, toStr) }
-                        val routeDeferred  = async(Dispatchers.IO) { viewModel.repository.getRouteHistory(devId, fromStr, toStr) }
-                        val eventsDeferred = async(Dispatchers.IO) { viewModel.repository.getEventsReport(devId, fromStr, toStr) }
-
-                        val sums   = sumsDeferred.await()
-                        val trips  = tripsDeferred.await()
-                        val stops  = stopsDeferred.await()
-                        val route  = routeDeferred.await()
-                        val events = eventsDeferred.await()
-
-                        summaryResults = sums
-                        tripResults = trips
-                        stopResults = stops
-                        routeResults = route
-                        eventResults = events
-
-                        viewModel.triggerFeedback("Report compiled for $timeframe: ${trips.size} trips, ${stops.size} stops, ${events.size} events")
+                    if (timeframe in listOf("Today", "Weekly", "Monthly")) {
+                        val periodType = when (timeframe) {
+                            "Weekly" -> PeriodType.WEEKLY
+                            "Monthly" -> PeriodType.MONTHLY
+                            else -> PeriodType.DAILY
+                        }
+                        val reconciled = try {
+                            viewModel.queryReconciledPeriodReport(devId, periodType)
+                        } catch (_: Exception) {
+                            null
+                        }
+                        periodReport = reconciled
                     }
+
+                    val bundle = ReportDataLoader.load(viewModel.repository, devId, fromStr, toStr)
+                    summaryResults = bundle.summaries
+                    tripResults = bundle.trips
+                    stopResults = bundle.stops
+                    routeResults = bundle.route
+                    eventResults = bundle.events
+
+                    viewModel.triggerFeedback("Report compiled for $timeframe: ${bundle.trips.size} trips, ${bundle.stops.size} stops, ${bundle.events.size} events")
                 } catch (e: Exception) {
                     viewModel.triggerFeedback("Query failed: " + e.message)
                 } finally {
@@ -289,53 +300,73 @@ fun ReportsTab(
 
         if (reportLoading) {
             Spacer(modifier = Modifier.height(16.dp))
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MC.Surface1),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(20.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(22.dp),
-                        color = MC.AccentPrimary,
-                        strokeWidth = 2.5.dp
-                    )
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column {
-                        Text(
-                            text = if (appLanguage == "am") "የ${reportTimeframeType} ሪፖርት በማዘጋጀት ላይ..." else "Fetching $reportTimeframeType report...",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MC.TextPrimary,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = if (appLanguage == "am") "የቀደመው መረጃ ጸድቷል፣ አዲስ የቴሌማቲክስ መረጃ በመጫን ላይ..." else "Previous data cleared. Compiling fresh telematics data...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MC.TextSecondary
-                        )
-                    }
-                }
-            }
+            ReportSkeletonLoader(modifier = Modifier.fillMaxWidth())
         }
 
-        if (!reportLoading && selectedAssetForReport != null && (summaryResults.isNotEmpty() || tripResults.isNotEmpty() || routeResults.isNotEmpty())) {
+        var anomalyDismissed by remember(selectedAssetForReport, reportTimeframeType) { mutableStateOf(false) }
+
+        if (!reportLoading && selectedAssetForReport != null && (summaryResults.isNotEmpty() || tripResults.isNotEmpty() || routeResults.isNotEmpty() || periodReport != null)) {
             val currentDev = devices.find { it.id == selectedAssetForReport }
-            val totalDistKm = summaryResults.firstOrNull()?.distanceKm
+            val speedingViolationsCount = remember(eventResults, routeResults) {
+                val alarms = eventResults.count { it.type == "alarm" || it.attributes.containsKey("alarm") }
+                val routeSpeeding = routeResults.count { it.speedKmh > 80.0 } / 12
+                alarms + routeSpeeding
+            }
+            val geofenceBreaksCount = remember(eventResults) {
+                eventResults.count { it.type.contains("geofence", ignoreCase = true) }
+            }
+
+            val totalDistKm = periodReport?.totalDistanceKm
+                ?: summaryResults.firstOrNull()?.distanceKm
                 ?: (tripResults.sumOf { it.distanceKm }.takeIf { it > 0 } ?: (routeResults.size * 1.85))
-            val avgSpd = summaryResults.firstOrNull()?.averageSpeedKmh
-                ?: (routeResults.map { it.speedKmh }.average().takeIf { !it.isNaN() } ?: 34.5)
-            val maxSpd = summaryResults.firstOrNull()?.maxSpeedKmh
-                ?: (routeResults.maxOfOrNull { it.speedKmh } ?: 78.0)
-            val fuelLiters = summaryResults.firstOrNull()?.spentFuel
+            val avgSpd = periodReport?.weightedAverageSpeedKmh?.takeIf { it > 0.1 }
+                ?: summaryResults.firstOrNull()?.averageSpeedKmh?.takeIf { it > 0.1 }
+                ?: tripResults.mapNotNull { it.averageSpeedKmh.takeIf { s -> s > 0.1 } }.average().takeIf { !it.isNaN() && it > 0.1 }
+                ?: run {
+                    val sanitized = TelemetrySanitizerService.sanitizeRoute(routeResults)
+                    val distMeters = sanitized.zipWithNext { a, b ->
+                        GeofenceUtils.calculateDistanceMeters(a.latitude, a.longitude, b.latitude, b.longitude)
+                    }.sum()
+                    val movingMs = sanitized.zipWithNext { a, b ->
+                        if (a.speedKmh > 0.8 || b.speedKmh > 0.8) {
+                            val t1 = TelemetrySanitizerService.parseUtcIso8601(a.fixTime ?: a.deviceTime)?.time ?: 0L
+                            val t2 = TelemetrySanitizerService.parseUtcIso8601(b.fixTime ?: b.deviceTime)?.time ?: 0L
+                            val diff = t2 - t1
+                            if (diff in 1..3600000) diff else 10000L
+                        } else 0L
+                    }.sum().takeIf { it > 0 } ?: (sanitized.count { it.speedKmh > 0.8 } * 10000L)
+                    (ReportReconciliationManager.calculateWeightedAverageSpeedKnots(distMeters, movingMs) * 1.852).takeIf { it > 0.1 } ?: (if (totalDistKm > 0.1) 36.5 else 0.0)
+                }
+            val maxSpd = periodReport?.maxSpeedKmh?.takeIf { it > 0.1 }
+                ?: summaryResults.firstOrNull()?.maxSpeedKmh?.takeIf { it > 0.1 }
+                ?: tripResults.mapNotNull { it.maxSpeedKmh.takeIf { s -> s > 0.1 } }.maxOrNull()
+                ?: (routeResults.maxOfOrNull { it.speedKmh }?.takeIf { it > 0.1 } ?: (if (totalDistKm > 0.1) 78.0 else 0.0))
+            val fuelLiters = periodReport?.totalFuelLiters?.takeIf { it > 0 }
+                ?: summaryResults.firstOrNull()?.spentFuel
                 ?: (totalDistKm * 0.092)
-            val engineRuntime = summaryResults.firstOrNull()?.engineHoursFormatted
-                ?: "${(totalDistKm / maxOf(1.0, avgSpd)).toInt()}h ${(((totalDistKm / maxOf(1.0, avgSpd)) % 1) * 60).toInt()}m"
+            val engineRuntime = if (periodReport != null && periodReport!!.totalEngineHoursMs > 0) {
+                val totalSeconds = periodReport!!.totalEngineHoursMs / 1000
+                val hours = totalSeconds / 3600
+                val minutes = (totalSeconds % 3600) / 60
+                "${hours}h ${minutes}m"
+            } else {
+                summaryResults.firstOrNull()?.engineHoursFormatted
+                    ?: "${(totalDistKm / maxOf(1.0, avgSpd)).toInt()}h ${(((totalDistKm / maxOf(1.0, avgSpd)) % 1) * 60).toInt()}m"
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
+
+            // ANOMALY PROMINENT WARNING BANNER
+            if (!anomalyDismissed && (speedingViolationsCount > 0 || geofenceBreaksCount > 0)) {
+                ReportAnomalyBanner(
+                    speedingViolationsCount = speedingViolationsCount,
+                    geofenceBreaksCount = geofenceBreaksCount,
+                    onViewSafetyTab = { reportCategoryType = "Safety" },
+                    onDismiss = { anomalyDismissed = true }
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -495,6 +526,15 @@ fun ReportsTab(
                 }
             }
 
+            // DAILY ACTIVITY TREND BAR CHART (If weekly / monthly report with daily breakdown)
+            if (periodReport != null && periodReport!!.dailyBreakdown.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                DailyTrendBarChart(
+                    dailyBreakdown = periodReport!!.dailyBreakdown,
+                    isMetric = isMetric
+                )
+            }
+
             Spacer(modifier = Modifier.height(14.dp))
 
             // Content based on selected category tab
@@ -523,14 +563,12 @@ fun ReportsTab(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     if (tripResults.isEmpty()) {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = MC.Surface1),
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                        ) {
-                            Box(modifier = Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                                Text("No completed trips recorded for this timeframe.", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
+                        EmptyStateView(
+                            icon = Icons.Default.DirectionsCar,
+                            title = "No trips logged",
+                            subtitle = "No completed trips recorded for this timeframe.",
+                            modifier = Modifier.padding(vertical = 16.dp)
+                        )
                     } else {
                         displayTrips.forEachIndexed { idx, trip ->
                             Card(
@@ -630,14 +668,12 @@ fun ReportsTab(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     if (stopResults.isEmpty()) {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = MC.Surface1),
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                        ) {
-                            Box(modifier = Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                                Text("No parking or idling stops logged for this period.", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
+                        EmptyStateView(
+                            icon = Icons.Default.Place,
+                            title = "No stops recorded",
+                            subtitle = "No parking or idling stops logged for this period.",
+                            modifier = Modifier.padding(vertical = 16.dp)
+                        )
                     } else {
                         displayStops.forEachIndexed { idx, stop ->
                             Card(
@@ -734,14 +770,12 @@ fun ReportsTab(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     if (eventResults.isEmpty()) {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = MC.Surface1),
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                        ) {
-                            Box(modifier = Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                                Text("No security alarms or speeding incidents reported. Clean record!", color = MC.StatusOnline, style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
+                        EmptyStateView(
+                            icon = Icons.Default.CheckCircle,
+                            title = "Clean Safety Record",
+                            subtitle = "No security alarms or speeding incidents reported. Clean record!",
+                            modifier = Modifier.padding(vertical = 16.dp)
+                        )
                     } else {
                         displayEvents.forEach { evt ->
                             Card(
@@ -836,6 +870,14 @@ fun ReportsTab(
                         }
                     }
 
+                    if (periodReport != null && periodReport!!.dailyBreakdown.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        DailyBreakdownTable(
+                            dailyBreakdown = periodReport!!.dailyBreakdown,
+                            isMetric = isMetric
+                        )
+                    }
+
                     if (tripResults.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(10.dp))
                         Text("Latest Trip Highlight", color = MC.TextPrimary, style = MaterialTheme.typography.titleSmall)
@@ -857,12 +899,11 @@ fun ReportsTab(
                 }
             }
         } else if (selectedAssetForReport != null) {
-            Text(
-                text = if (appLanguage == "am") "ለተመረጠው የጊዜ ገደብ የተመዘገበ መረጃ አልተገኘም።" else "No telematics data or route records found for the selected timeframe. Click Generate to fetch.",
-                color = MC.TextSecondary,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(16.dp),
-                textAlign = TextAlign.Center
+            EmptyStateView(
+                icon = Icons.Default.Assessment,
+                title = "No report generated",
+                subtitle = if (appLanguage == "am") "ለተመረጠው የጊዜ ገደብ የተመዘገበ መረጃ አልተገኘም። ሪፖርቱን ለማምጣት 'ሪፖርት አውጣ' የሚለውን ይጫኑ።" else "No telematics data or route records found for the selected timeframe. Click 'Generate' to fetch.",
+                modifier = Modifier.padding(16.dp)
             )
         }
     }

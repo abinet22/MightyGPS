@@ -21,8 +21,12 @@ data class DailySummary(
     val maxSpeedKmh: Double get() = maxSpeedKnots * 1.852
     val maxSpeedMph: Double get() = maxSpeedKnots * 1.15078
     val calculatedAvgSpeedKmh: Double
-        get() = if (movingDurationMs > 0) {
+        get() = if (movingDurationMs > 0 && totalDistanceMeters > 0) {
             (totalDistanceMeters / 1000.0) / (movingDurationMs / 3600000.0)
+        } else if (averageSpeedKnots > 0) {
+            averageSpeedKnots * 1.852
+        } else if (totalDistanceMeters > 0 && engineHoursMs > 0) {
+            (totalDistanceMeters / 1000.0) / (engineHoursMs / 3600000.0)
         } else 0.0
     val calculatedAvgSpeedKnots: Double
         get() = calculatedAvgSpeedKmh / 1.852

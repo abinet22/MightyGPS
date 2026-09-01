@@ -29,6 +29,7 @@ import com.example.data.model.Position
 import com.example.ui.map.MapMarker
 import com.example.ui.map.SlippyMap
 import com.example.ui.screens.components.MapStyleControlLayer
+import com.example.ui.theme.MC
 import com.example.ui.viewmodel.TraccarViewModel
 import com.example.ui.viewmodel.TraccarViewModel.CustomGeofence
 import com.example.util.UnitFormatter
@@ -130,11 +131,6 @@ fun MapTab(
         } else null
     }
 
-    // Render dynamic custom SlippyMap
-    val playDevName = selectedDeviceId?.let { id ->
-        devices.find { it.id == id }?.name ?: cachedDevices.find { it.id == id }?.name
-    } ?: "Playback Asset #${activePlaybackPos?.deviceId ?: 0L}"
-
     Box(modifier = Modifier.fillMaxSize()) {
         SlippyMap(
             modifier = Modifier.fillMaxSize(),
@@ -142,30 +138,14 @@ fun MapTab(
             initialCenterLng = if (playLng != null && isCameraFollowLocked) playLng else mapCenterLng,
             initialZoom = if (playLat != null && isCameraFollowLocked) 17f else if (selectedDeviceId != null && isCameraFollowLocked) 17f else persistentMapZoom,
             playbackStepIndex = if (routeHistory.isNotEmpty()) playbackStepIndex else -1,
-            markers = if (playLat != null && playLng != null && activePlaybackPos != null) {
-                listOf(
-                    MapMarker(
-                        id = 99999 + activePlaybackPos.deviceId,
-                        name = playDevName,
-                        latitude = playLat,
-                        longitude = playLng,
-                        course = playCourse,
-                        status = "online",
-                        speedKmh = activePlaybackPos.speedKmh,
-                        altitude = activePlaybackPos.altitude,
-                        lastUpdate = activePlaybackPos.deviceTime,
-                        address = activePlaybackPos.address,
-                        accuracy = activePlaybackPos.accuracy
-                    )
-                )
-            } else mapMarkers,
+            markers = mapMarkers,
             routePath = routeHistory,
-            selectedMarkerId = if (activePlaybackPos != null) 99999 + activePlaybackPos.deviceId else selectedDeviceId,
+            selectedMarkerId = selectedDeviceId,
             recenterTriggerKey = mapRecenterTrigger,
             onMarkerClick = { id ->
                 if (id == -1L) {
                     onSelectDevice(null)
-                } else if (id < 99999) {
+                } else {
                     onSelectDevice(id)
                     onShowDeviceDetailSheet()
                 }
@@ -344,11 +324,17 @@ fun MapTab(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(10.dp)
-                            .background(Color(0xFF10B981), CircleShape)
+                            .size(8.dp)
+                            .background(MC.StatusOnline, CircleShape)
+                    )
+                    Icon(
+                        imageVector = Icons.Default.Place,
+                        contentDescription = null,
+                        tint = MC.StatusOnline,
+                        modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = "📍 Inside Zone: ${activeContainedGeofence.name}",
+                        text = "Inside Zone: ${activeContainedGeofence.name}",
                         color = Color.White,
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Bold

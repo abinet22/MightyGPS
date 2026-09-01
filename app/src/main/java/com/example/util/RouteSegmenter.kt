@@ -68,24 +68,13 @@ fun segmentRoute(routeHistory: List<Position>): List<RouteSegment> {
     var startIdx = 0
     var segmentCounter = 1
 
-    val distanceCalc = { lat1: Double, lon1: Double, lat2: Double, lon2: Double ->
-        val r = 6371.0 // Earth radius in km
-        val dLat = Math.toRadians(lat2 - lat1)
-        val dLon = Math.toRadians(lon2 - lon1)
-        val a = Math.sin(dLat / 2.0) * Math.sin(dLat / 2.0) +
-                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
-                Math.sin(dLon / 2.0) * Math.sin(dLon / 2.0)
-        val c = 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a))
-        r * c
-    }
-
     val segmentDistance = { from: Int, to: Int ->
         var sum = 0.0
         for (i in from until to) {
             val p1 = routeHistory.getOrNull(i)
             val p2 = routeHistory.getOrNull(i + 1)
             if (p1 != null && p2 != null) {
-                sum += distanceCalc(p1.latitude, p1.longitude, p2.latitude, p2.longitude)
+                sum += GeofenceUtils.calculateDistanceMeters(p1.latitude, p1.longitude, p2.latitude, p2.longitude) / 1000.0
             }
         }
         sum
@@ -99,7 +88,7 @@ fun segmentRoute(routeHistory: List<Position>): List<RouteSegment> {
         val tCurr = getEpochTime(curr.deviceTime)
 
         val timeDiffSecs = (tCurr - tPrev) / 1000
-        val distKm = distanceCalc(prev.latitude, prev.longitude, curr.latitude, curr.longitude)
+        val distKm = GeofenceUtils.calculateDistanceMeters(prev.latitude, prev.longitude, curr.latitude, curr.longitude) / 1000.0
 
         // Split criteria: time gap > 10 minutes (600s) OR stopped for > 5 mins
         val isTripBreak = timeDiffSecs > 600 || (timeDiffSecs > 300 && (curr.speed ?: 0.0) < 1.0 && (prev.speed ?: 0.0) < 1.0)

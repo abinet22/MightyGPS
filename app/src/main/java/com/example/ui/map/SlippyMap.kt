@@ -14,16 +14,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Place
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -31,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.rememberAsyncImagePainter
 import com.example.data.model.Position
+import com.example.ui.theme.MC
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
@@ -112,7 +111,7 @@ private fun formatLastUpdate(rawTime: String?): String {
     }
 }
 
-private fun parseHexColor(hex: String, fallback: Color = Color(0xFF3B82F6)): Color {
+private fun parseHexColor(hex: String, fallback: Color = MC.AccentPrimary): Color {
     return try {
         val clean = hex.removePrefix("#").trim()
         if (clean.length == 6 || clean.length == 8) {
@@ -453,7 +452,7 @@ fun SlippyMap(
             // 1. Geofences Layer (Polygons & Circles)
             if (isGeofenceLayerVisible) {
                 geofences.forEach { gf ->
-                    val baseColor = parseHexColor(gf.colorHex, Color(0xFF3B82F6))
+                    val baseColor = parseHexColor(gf.colorHex, MC.AccentPrimary)
                     val fillColor = baseColor.copy(alpha = 0.25f)
                     val strokeColor = baseColor.copy(alpha = 0.95f)
 
@@ -480,7 +479,7 @@ fun SlippyMap(
                             ) {
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
-                                    color = Color(0xEC0B132B),
+                                    color = MC.Surface1.copy(alpha = 0.92f),
                                     border = BorderStroke(1.2.dp, baseColor.copy(alpha = 0.85f)),
                                     shadowElevation = 6.dp,
                                     modifier = Modifier.clickable { onGeofenceClick(gf) }
@@ -497,7 +496,7 @@ fun SlippyMap(
                                         )
                                         Text(
                                             text = gf.name,
-                                            color = Color.White,
+                                            color = MC.TextPrimary,
                                             style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.Bold
                                         )
@@ -529,7 +528,7 @@ fun SlippyMap(
                             ) {
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
-                                    color = Color(0xEC0B132B),
+                                    color = MC.Surface1.copy(alpha = 0.92f),
                                     border = BorderStroke(1.2.dp, baseColor.copy(alpha = 0.85f)),
                                     shadowElevation = 6.dp,
                                     modifier = Modifier.clickable { onGeofenceClick(gf) }
@@ -546,7 +545,7 @@ fun SlippyMap(
                                         )
                                         Text(
                                             text = gf.name,
-                                            color = Color.White,
+                                            color = MC.TextPrimary,
                                             style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.Bold
                                         )
@@ -564,14 +563,14 @@ fun SlippyMap(
                 if (latLngs.size >= 3) {
                     Polygon(
                         points = latLngs,
-                        fillColor = Color(0x3310B981),
-                        strokeColor = Color(0xFF10B981),
+                        fillColor = MC.StatusOnline.copy(alpha = 0.2f),
+                        strokeColor = MC.StatusOnline,
                         strokeWidth = 4f
                     )
                 } else if (latLngs.size == 2) {
                     Polyline(
                         points = latLngs,
-                        color = Color(0xFF10B981),
+                        color = MC.StatusOnline,
                         width = 6f
                     )
                 }
@@ -583,8 +582,8 @@ fun SlippyMap(
                         Box(
                             modifier = Modifier
                                 .size(16.dp)
-                                .background(Color(0xFF10B981), CircleShape)
-                                .border(2.dp, Color.White, CircleShape)
+                                .background(MC.StatusOnline, CircleShape)
+                                .border(2.dp, MC.TextPrimary, CircleShape)
                         )
                     }
                 }
@@ -593,8 +592,8 @@ fun SlippyMap(
                 Circle(
                     center = LatLng(drawnCircleCenter.first, drawnCircleCenter.second),
                     radius = drawnCircleRadiusMeters,
-                    fillColor = Color(0x333B82F6),
-                    strokeColor = Color(0xFF3B82F6),
+                    fillColor = MC.AccentPrimary.copy(alpha = 0.2f),
+                    strokeColor = MC.AccentPrimary,
                     strokeWidth = 4f
                 )
                 MarkerComposable(
@@ -604,8 +603,8 @@ fun SlippyMap(
                     Box(
                         modifier = Modifier
                             .size(20.dp)
-                            .background(Color(0xFF3B82F6), CircleShape)
-                            .border(2.dp, Color.White, CircleShape)
+                            .background(MC.AccentPrimary, CircleShape)
+                            .border(2.dp, MC.TextPrimary, CircleShape)
                     )
                 }
             }
@@ -620,14 +619,14 @@ fun SlippyMap(
                     // Dark outer shadow backing for contrast
                     Polyline(
                         points = fullRouteLatLngs,
-                        color = Color(0xFF0F172A).copy(alpha = 0.8f),
+                        color = MC.Surface1.copy(alpha = 0.8f),
                         width = 16f,
                         zIndex = 1f
                     )
                     // Main background track
                     Polyline(
                         points = fullRouteLatLngs,
-                        color = Color(0xFF3B82F6).copy(alpha = 0.65f),
+                        color = MC.AccentPrimary.copy(alpha = 0.65f),
                         width = 10f,
                         zIndex = 2f
                     )
@@ -637,7 +636,7 @@ fun SlippyMap(
                         if (traveledPoints.isNotEmpty()) {
                             Polyline(
                                 points = traveledPoints,
-                                color = Color(0xFF10B981),
+                                color = MC.StatusOnline,
                                 width = 11f,
                                 zIndex = 3f
                             )
@@ -652,7 +651,7 @@ fun SlippyMap(
                         zIndex = 15f
                     ) {
                         Surface(
-                            color = Color(0xFF10B981),
+                            color = MC.StatusOnline,
                             shape = RoundedCornerShape(12.dp),
                             border = BorderStroke(2.dp, Color.White),
                             shadowElevation = 4.dp
@@ -662,7 +661,12 @@ fun SlippyMap(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Text("🏁", style = MaterialTheme.typography.bodySmall)
+                                Icon(
+                                    imageVector = Icons.Default.Flag,
+                                    contentDescription = "Start",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(14.dp)
+                                )
                                 Text("START", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.ExtraBold)
                             }
                         }
@@ -677,7 +681,7 @@ fun SlippyMap(
                             zIndex = 15f
                         ) {
                             Surface(
-                                color = Color(0xFFEF4444),
+                                color = MC.StatusOffline,
                                 shape = RoundedCornerShape(12.dp),
                                 border = BorderStroke(2.dp, Color.White),
                                 shadowElevation = 4.dp
@@ -687,7 +691,12 @@ fun SlippyMap(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    Text("🎯", style = MaterialTheme.typography.bodySmall)
+                                    Icon(
+                                        imageVector = Icons.Default.Place,
+                                        contentDescription = "End",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(14.dp)
+                                    )
                                     Text("END", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.ExtraBold)
                                 }
                             }
@@ -713,7 +722,7 @@ fun SlippyMap(
                                 zIndex = 6f
                             ) {
                                 Surface(
-                                    color = if (isVisited) Color(0xFF10B981).copy(alpha = 0.9f) else Color(0xFF64748B).copy(alpha = 0.9f),
+                                    color = if (isVisited) MC.StatusOnline.copy(alpha = 0.9f) else MC.TextTertiary.copy(alpha = 0.9f),
                                     shape = CircleShape,
                                     border = BorderStroke(1.5.dp, Color.White),
                                     modifier = Modifier.size(24.dp)
@@ -721,10 +730,19 @@ fun SlippyMap(
                                     Box(contentAlignment = Alignment.Center) {
                                         val timeStr = (pos.fixTime ?: pos.deviceTime)?.let {
                                             try {
-                                                if (it.length >= 16) it.substring(11, 16) else "⏱️"
-                                            } catch (e: Exception) { "⏱️" }
-                                        } ?: "⏱️"
-                                        Text(timeStr, color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                                if (it.length >= 16) it.substring(11, 16) else null
+                                            } catch (e: Exception) { null }
+                                        }
+                                        if (timeStr != null) {
+                                            Text(timeStr, color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Default.AccessTime,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -747,10 +765,15 @@ fun SlippyMap(
                                     contentAlignment = Alignment.Center,
                                     modifier = Modifier
                                         .size(44.dp)
-                                        .background(Color(0xFF3B82F6), CircleShape)
+                                        .background(MC.AccentPrimary, CircleShape)
                                         .border(3.dp, Color.White, CircleShape)
                                 ) {
-                                    Text("🚗", fontSize = 22.sp)
+                                    Icon(
+                                        imageVector = Icons.Default.DirectionsCar,
+                                        contentDescription = "Playback vehicle",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
                                 }
                             }
                         }
@@ -761,83 +784,112 @@ fun SlippyMap(
             // 4. Vehicle Markers
             markers.forEach { m ->
                 if (m.latitude != 0.0 && m.longitude != 0.0) {
-                    val markerState = rememberMarkerState(key = "marker_${m.id}", position = LatLng(m.latitude, m.longitude))
-                    LaunchedEffect(m.latitude, m.longitude) {
-                        markerState.position = LatLng(m.latitude, m.longitude)
-                    }
-                    val isSelected = m.id == selectedMarkerId
-                    val statusColor = when (m.status.lowercase()) {
-                        "online", "moving" -> parseHexColor(colorMoving, Color(0xFF10B981))
-                        "idle", "parked" -> parseHexColor(colorIdle, Color(0xFFF59E0B))
-                        else -> parseHexColor(colorOffline, Color(0xFFEF4444))
-                    }
-                    val iconEmoji = when (markerIconStyle) {
-                        "car" -> "🚗"
-                        "truck" -> "🚛"
-                        "bike" -> "🏍️"
-                        "pin" -> "📍"
-                        "arrow" -> "🧭"
-                        else -> "🚗"
-                    }
-                    val labelText = when (markerLabelType) {
-                        "name" -> m.name
-                        "coordinates" -> String.format("%.4f, %.4f", m.latitude, m.longitude)
-                        "plate" -> "ET 3-" + (10000 + (abs(m.id) % 90000)) + " AA"
-                        else -> ""
-                    }
-
-                    MarkerComposable(
-                        state = markerState,
-                        title = m.name,
-                        snippet = m.info,
-                        onClick = { _ ->
-                            onMarkerClick(m.id)
-                            onUserInteraction()
-                            true
-                        },
-                        zIndex = if (isSelected) 100f else 10f
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(4.dp)
-                        ) {
-                            if (labelText.isNotEmpty()) {
-                                Surface(
-                                    color = Color(0xFF1E293B).copy(alpha = 0.95f),
-                                    shape = RoundedCornerShape(6.dp),
-                                    border = BorderStroke(1.dp, if (isSelected) Color(0xFF3B82F6) else statusColor),
-                                    shadowElevation = 3.dp,
-                                    modifier = Modifier.padding(bottom = 2.dp)
-                                ) {
-                                    Text(
-                                        text = labelText,
-                                        color = Color.White,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
+                    key(m.id) {
+                        val markerState = rememberMarkerState(
+                            key = "marker_${m.id}",
+                            position = LatLng(m.latitude, m.longitude)
+                        )
+                        LaunchedEffect(m.latitude, m.longitude) {
+                            markerState.position = LatLng(m.latitude, m.longitude)
+                        }
+                        val isSelected = m.id == selectedMarkerId
+                        val statusColor = when (m.status.lowercase()) {
+                            "online", "moving" -> parseHexColor(colorMoving, MC.StatusOnline)
+                            "idle", "parked" -> parseHexColor(colorIdle, MC.StatusIdle)
+                            else -> parseHexColor(colorOffline, MC.StatusOffline)
+                        }
+                        val markerIcon: ImageVector = when (markerIconStyle) {
+                            "car" -> Icons.Default.DirectionsCar
+                            "truck" -> Icons.Default.LocalShipping
+                            "bike" -> Icons.Default.TwoWheeler
+                            "pin" -> Icons.Default.Place
+                            "arrow" -> Icons.Default.Navigation
+                            else -> when (m.category?.lowercase()) {
+                                "truck" -> Icons.Default.LocalShipping
+                                "bus" -> Icons.Default.DirectionsBus
+                                "van" -> Icons.Default.AirportShuttle
+                                "person" -> Icons.Default.Person
+                                "motorcycle", "bike" -> Icons.Default.TwoWheeler
+                                "arrow" -> Icons.Default.Navigation
+                                "pin" -> Icons.Default.Place
+                                else -> Icons.Default.DirectionsCar
                             }
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .size(if (isSelected) 44.dp else 36.dp)
-                                    .background(statusColor.copy(alpha = 0.25f), CircleShape)
-                                    .border(if (isSelected) 3.dp else 2.dp, if (isSelected) Color(0xFF3B82F6) else statusColor, CircleShape)
-                                    .padding(3.dp)
-                                    .background(Color.White, CircleShape)
+                        }
+                        val labelText = when (markerLabelType) {
+                            "name" -> m.name
+                            "coordinates" -> String.format("%.4f, %.4f", m.latitude, m.longitude)
+                            "plate" -> if (m.info.contains("Plate: ")) m.info.substringAfter("Plate: ").substringBefore(" •") else "ET 3-" + (10000 + (abs(m.id) % 90000)) + " AA"
+                            else -> ""
+                        }
+
+                        MarkerComposable(
+                            keys = arrayOf<Any>(
+                                m.id,
+                                m.name,
+                                m.info,
+                                m.status,
+                                m.category ?: "",
+                                isSelected,
+                                labelText,
+                                markerIconStyle,
+                                markerLabelType,
+                                statusColor.value,
+                                customBitmapPainter?.toString() ?: ""
+                            ),
+                            state = markerState,
+                            title = m.name,
+                            snippet = m.info,
+                            onClick = { _ ->
+                                onMarkerClick(m.id)
+                                onUserInteraction()
+                                true
+                            },
+                            zIndex = if (isSelected) 100f else 10f
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.padding(4.dp)
                             ) {
-                                if (customBitmapPainter != null) {
-                                    androidx.compose.foundation.Image(
-                                        painter = rememberAsyncImagePainter(customBitmapPainter),
-                                        contentDescription = "Custom Icon",
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                } else {
-                                    Text(
-                                        text = iconEmoji,
-                                        style = if (isSelected) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleMedium
-                                    )
+                                if (labelText.isNotEmpty()) {
+                                    Surface(
+                                        color = MC.Surface1.copy(alpha = 0.95f),
+                                        shape = RoundedCornerShape(6.dp),
+                                        border = BorderStroke(1.dp, if (isSelected) MC.AccentPrimary else statusColor),
+                                        shadowElevation = 3.dp,
+                                        modifier = Modifier.padding(bottom = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = labelText,
+                                            color = Color.White,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(if (isSelected) 44.dp else 36.dp)
+                                        .background(statusColor.copy(alpha = 0.25f), CircleShape)
+                                        .border(if (isSelected) 3.dp else 2.dp, if (isSelected) MC.AccentPrimary else statusColor, CircleShape)
+                                        .padding(3.dp)
+                                        .background(if (isSelected) MC.AccentPrimary else statusColor, CircleShape)
+                                ) {
+                                    if (customBitmapPainter != null) {
+                                        androidx.compose.foundation.Image(
+                                            painter = rememberAsyncImagePainter(customBitmapPainter),
+                                            contentDescription = "Custom Icon",
+                                            modifier = Modifier.size(if (isSelected) 24.dp else 18.dp)
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = markerIcon,
+                                            contentDescription = m.name,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(if (isSelected) 22.dp else 18.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -856,27 +908,27 @@ fun SlippyMap(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color(0xFF0F172A).copy(alpha = 0.85f)),
+                    .background(MC.Surface0.copy(alpha = 0.85f)),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     modifier = Modifier
-                        .background(Color(0xFF1E293B), RoundedCornerShape(20.dp))
-                        .border(1.dp, Color(0xFF334155), RoundedCornerShape(20.dp))
+                        .background(MC.Surface1, RoundedCornerShape(20.dp))
+                        .border(1.dp, MC.Surface3, RoundedCornerShape(20.dp))
                         .padding(32.dp)
                 ) {
-                    CircularProgressIndicator(color = Color(0xFF3B82F6), strokeWidth = 3.dp)
+                    CircularProgressIndicator(color = MC.AccentPrimary, strokeWidth = 3.dp)
                     Text(
                         "Loading Google Maps...",
-                        color = Color.White,
+                        color = MC.TextPrimary,
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         "Connecting to native rendering engine and GPS tiles",
-                        color = Color.LightGray,
+                        color = MC.TextSecondary,
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center
                     )
@@ -886,12 +938,12 @@ fun SlippyMap(
                                 isMapLoaded = false
                                 retryTrigger++
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
+                            colors = ButtonDefaults.buttonColors(containerColor = MC.AccentPrimary),
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = "Retry", modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Retry Connection", color = Color.White, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                            Text("Retry Connection", color = MC.TextPrimary, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
                         }
                     }
                 }

@@ -92,14 +92,7 @@ fun PlaybackTab(
 
     // Distance calculation helper
     val calculateDistance: (Double, Double, Double, Double) -> Double = { lat1, lon1, lat2, lon2 ->
-        val r = 6371.0 // earth radius in km
-        val dLat = Math.toRadians(lat2 - lat1)
-        val dLon = Math.toRadians(lon2 - lon1)
-        val a = Math.sin(dLat / 2.0) * Math.sin(dLat / 2.0) +
-                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
-                Math.sin(dLon / 2.0) * Math.sin(dLon / 2.0)
-        val c = 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a))
-        r * c
+        com.example.util.GeofenceUtils.calculateDistanceMeters(lat1, lon1, lat2, lon2) / 1000.0
     }
 
     val calculateCumulativeDistance: (List<Position>, Int) -> Double = { trail, endIndex ->

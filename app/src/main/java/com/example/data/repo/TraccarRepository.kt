@@ -411,7 +411,12 @@ class TraccarRepository(private val context: Context) {
         }
     }
 
-    suspend fun sendCommand(deviceId: Long, commandType: String, description: String): CommandResult {
+    suspend fun sendCommand(
+        deviceId: Long,
+        type: String,
+        attributes: Map<String, String> = emptyMap(),
+        description: String? = null
+    ): CommandResult {
         if (isDemo()) {
             delay(400)
             return CommandResult(success = true, queued = false, code = 200)
@@ -419,7 +424,7 @@ class TraccarRepository(private val context: Context) {
         val api = traccarApi ?: return CommandResult(false, false, -1, "API not configured")
         return try {
             val response = api.sendCommand(
-                DeviceCommand(deviceId = deviceId, type = commandType, description = description)
+                DeviceCommand(deviceId = deviceId, type = type, description = description, attributes = attributes)
             )
             when {
                 response.code() == 202 -> CommandResult(true, queued = true, code = 202) // Traccar returns 202 when device is offline & command is queued
@@ -457,22 +462,51 @@ class TraccarRepository(private val context: Context) {
             val durationHours = ((toDate?.time ?: System.currentTimeMillis()) - (fromDate?.time ?: (System.currentTimeMillis() - 24 * 3600 * 1000L))) / (1000 * 3600.0)
             val daysMultiplier = maxOf(0.5, durationHours / 24.0)
 
-            devList.map { dev ->
-                val baseDistanceMeters = (85000.0 + (dev.id * 24500.0)) * daysMultiplier
-                val avgSpeedKnots = 18.0 + (dev.id % 4) * 3.5
-                val maxSpeedKnots = 42.0 + (dev.id % 3) * 6.0
-                val fuelLiters = (baseDistanceMeters / 1000.0) * 0.095
-                val engineHoursMs = ((baseDistanceMeters / 1000.0) / (avgSpeedKnots * 1.852) * 3600 * 1000).toLong()
+            val dayCount = if (durationHours > 240) 30 else if (durationHours > 36) 7 else 1
+            if (daily == true && dayCount > 1 && devList.size == 1) {
+                val dev = devList.first()
+                val totalDistanceMeters = (85000.0 + (dev.id * 24500.0)) * daysMultiplier
+                val dailyWeights = if (dayCount == 7) {
+                    listOf(0.13, 0.17, 0.14, 0.19, 0.15, 0.12, 0.10)
+                } else {
+                    val raw = List(30) { idx -> 0.0333 + kotlin.math.sin(idx * 0.4) * 0.012 }
+                    val sum = raw.sum()
+                    raw.map { it / sum }
+                }
+                dailyWeights.mapIndexed { idx, w ->
+                    val dayDist = totalDistanceMeters * w
+                    val avgKnots = 18.0 + ((dev.id + idx) % 4) * 3.0
+                    val maxKnots = avgKnots + 18.0 + (idx % 3) * 5.0
+                    val fuelLiters = (dayDist / 1000.0) * 0.095
+                    val engineHoursMs = ((dayDist / 1000.0) / (avgKnots * 1.852) * 3600 * 1000).toLong()
+                    ReportSummary(
+                        deviceId = dev.id,
+                        deviceName = dev.name,
+                        maxSpeed = maxKnots,
+                        averageSpeed = avgKnots,
+                        distance = dayDist,
+                        spentFuel = fuelLiters,
+                        engineHours = engineHoursMs
+                    )
+                }
+            } else {
+                devList.map { dev ->
+                    val baseDistanceMeters = (85000.0 + (dev.id * 24500.0)) * daysMultiplier
+                    val avgSpeedKnots = 18.0 + (dev.id % 4) * 3.5
+                    val maxSpeedKnots = 42.0 + (dev.id % 3) * 6.0
+                    val fuelLiters = (baseDistanceMeters / 1000.0) * 0.095
+                    val engineHoursMs = ((baseDistanceMeters / 1000.0) / (avgSpeedKnots * 1.852) * 3600 * 1000).toLong()
 
-                ReportSummary(
-                    deviceId = dev.id,
-                    deviceName = dev.name,
-                    maxSpeed = maxSpeedKnots,
-                    averageSpeed = avgSpeedKnots,
-                    distance = baseDistanceMeters,
-                    spentFuel = fuelLiters,
-                    engineHours = engineHoursMs
-                )
+                    ReportSummary(
+                        deviceId = dev.id,
+                        deviceName = dev.name,
+                        maxSpeed = maxSpeedKnots,
+                        averageSpeed = avgSpeedKnots,
+                        distance = baseDistanceMeters,
+                        spentFuel = fuelLiters,
+                        engineHours = engineHoursMs
+                    )
+                }
             }
         } else {
             val api = traccarApi ?: return emptyList()
@@ -490,14 +524,10 @@ class TraccarRepository(private val context: Context) {
                         for (i in 0 until route.size - 1) {
                             val p1 = route[i]
                             val p2 = route[i + 1]
-                            val r = 6371000.0 // meters
-                            val dLat = Math.toRadians(p2.latitude - p1.latitude)
-                            val dLon = Math.toRadians(p2.longitude - p1.longitude)
-                            val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                                    Math.cos(Math.toRadians(p1.latitude)) * Math.cos(Math.toRadians(p2.latitude)) *
-                                    Math.sin(dLon / 2) * Math.sin(dLon / 2)
-                            val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-                            distMeters += (r * c)
+                            distMeters += com.example.util.GeofenceUtils.calculateDistanceMeters(
+                                p1.latitude, p1.longitude,
+                                p2.latitude, p2.longitude
+                            )
                         }
                         val devName = _realtimeDevices.value.find { it.id == deviceId }?.name ?: "Device #$deviceId"
                         listOf(
