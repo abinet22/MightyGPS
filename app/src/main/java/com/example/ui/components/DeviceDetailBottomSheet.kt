@@ -32,6 +32,7 @@ import com.example.data.model.Position
 import com.example.ui.screens.components.StatusBadge
 import com.example.ui.theme.MC
 import com.example.util.UnitFormatter
+import java.util.Locale
 
 /**
  * Modular BottomSheet component displaying driver details, vehicle info,
@@ -44,6 +45,7 @@ fun DeviceDetailBottomSheet(
     position: Position?,
     recentEvents: List<Event> = emptyList(),
     unitSystem: String = "metric",
+    infoCardFields: String = "name,speed,driver,lastUpdate,address,battery,odometer,ignition",
     onDismissRequest: () -> Unit,
     onPlaybackClick: (Long) -> Unit = {},
     onSendCommandClick: (Long) -> Unit = {},
@@ -71,6 +73,7 @@ fun DeviceDetailBottomSheet(
             position = position,
             recentEvents = recentEvents,
             unitSystem = unitSystem,
+            infoCardFields = infoCardFields,
             onDismiss = onDismissRequest,
             onPlaybackClick = { onPlaybackClick(device.id) },
             onSendCommandClick = { onSendCommandClick(device.id) },
@@ -117,6 +120,7 @@ fun DeviceDetailContent(
     position: Position?,
     recentEvents: List<Event>,
     unitSystem: String = "metric",
+    infoCardFields: String = "name,speed,driver,lastUpdate,address,battery,odometer,ignition",
     onDismiss: () -> Unit,
     onPlaybackClick: () -> Unit,
     onSendCommandClick: () -> Unit,
@@ -260,10 +264,12 @@ fun DeviceDetailContent(
                     device = device,
                     position = position,
                     unitSystem = unitSystem,
+                    infoCardFields = infoCardFields,
                     onPlaybackClick = onPlaybackClick,
                     onSendCommandClick = onSendCommandClick,
                     onCenterMapClick = onCenterMapClick,
-                    onShareLocation = onShareLocation
+                    onShareLocation = onShareLocation,
+                    onCallDriver = { onCallDriver(driverPhone) }
                 )
                 1 -> DriverTabContent(
                     driverName = driverName,
@@ -320,19 +326,29 @@ private fun VehicleTabContent(
     device: Device,
     position: Position?,
     unitSystem: String = "metric",
+    infoCardFields: String = "name,speed,driver,lastUpdate,address,battery,odometer,ignition",
     onPlaybackClick: () -> Unit,
     onSendCommandClick: () -> Unit,
     onCenterMapClick: () -> Unit,
-    onShareLocation: () -> Unit
+    onShareLocation: () -> Unit,
+    onCallDriver: () -> Unit = {}
 ) {
     val isMetric = unitSystem == "metric"
     val speedKmh = position?.speedKmh ?: (device.attributes["speed"] as? Number)?.toDouble() ?: 0.0
     val altitude = position?.altitude ?: 0.0
     val course = position?.course ?: 0.0
-    val address = position?.address ?: "GPS: ${String.format("%.4f", position?.latitude ?: 0.0)}, ${String.format("%.4f", position?.longitude ?: 0.0)}"
-    val ignition = position?.attributes?.get("ignition") as? Boolean ?: true
-    val battery = (position?.attributes?.get("batteryLevel") as? Number)?.toInt() ?: 94
-    val fuel = (position?.attributes?.get("fuel") as? Number)?.toInt() ?: 78
+    val address = position?.address ?: "GPS: ${String.format(Locale.US, "%.4f", position?.latitude ?: 0.0)}, ${String.format(Locale.US, "%.4f", position?.longitude ?: 0.0)}"
+    val ignition = position?.attributes?.get("ignition") as? Boolean ?: (device.attributes["ignition"] as? Boolean) ?: true
+    val battery = (position?.attributes?.get("batteryLevel") as? Number)?.toInt() ?: (device.attributes["batteryLevel"] as? Number)?.toInt() ?: (position?.attributes?.get("battery") as? Number)?.toInt() ?: 94
+    val fuel = (position?.attributes?.get("fuel") as? Number)?.toInt() ?: (device.attributes["fuel"] as? Number)?.toInt() ?: 78
+    val odometerKm = (position?.attributes?.get("totalDistance") as? Number)?.toDouble()?.let { it / 1000.0 } ?: (device.attributes["odometer"] as? Number)?.toDouble() ?: 14820.5
+    val plateOrModel = device.attributes["plate"]?.toString() ?: device.attributes["license_plate"]?.toString() ?: device.attributes["reg"]?.toString() ?: device.model ?: device.name
+    val driverName = (position?.attributes?.get("driverUniqueId") as? String) ?: (device.attributes["driver"] as? String) ?: (device.attributes["driverName"] as? String) ?: device.contact ?: "Driver - ${device.name}"
+    val lastUpdateStr = (position?.deviceTime ?: position?.fixTime ?: device.lastUpdate)?.let {
+        try {
+            if (it.length >= 19) it.replace("T", " ").substring(0, 19) else it
+        } catch (e: Exception) { it }
+    } ?: "Active Just Now"
 
     val headingStr = when (((course + 22.5) % 360 / 45).toInt()) {
         0 -> "North"
@@ -346,104 +362,265 @@ private fun VehicleTabContent(
         else -> "North"
     }
 
+    val orderedFieldKeys = remember(infoCardFields) {
+        val keys = infoCardFields.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+        if (keys.isEmpty()) listOf("name", "speed", "driver", "lastUpdate", "address", "battery", "odometer", "ignition") else keys
+    }
+
     LazyColumn(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier.fillMaxSize()
     ) {
-        // Location Card
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MC.Surface2),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Place,
-                        contentDescription = null,
-                        tint = MC.StatusOffline,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "CURRENT LOCATION",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MC.AccentPrimary
-                        )
-                        Text(
-                            text = address,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MC.TextPrimary,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+        // Dynamically iterate configured fields in exact user-specified order
+        orderedFieldKeys.forEach { fieldKey ->
+            when (fieldKey) {
+                "name" -> {
+                    item(key = "field_name") {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MC.Surface2),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DirectionsCar,
+                                    contentDescription = null,
+                                    tint = MC.AccentPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "VEHICLE & PLATE NUMBER",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MC.AccentPrimary
+                                    )
+                                    Text(
+                                        text = "${device.name} • Plate: $plateOrModel",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MC.TextPrimary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                "address" -> {
+                    item(key = "field_address") {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MC.Surface2),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Place,
+                                    contentDescription = null,
+                                    tint = MC.StatusOffline,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "CURRENT LOCATION",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MC.AccentPrimary
+                                    )
+                                    Text(
+                                        text = address,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MC.TextPrimary,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                "speed" -> {
+                    item(key = "field_speed") {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            MetricCard(
+                                title = "SPEED",
+                                value = UnitFormatter.speed(speedKmh, isMetric),
+                                icon = Icons.Default.Speed,
+                                valueColor = MC.StatusOnline,
+                                modifier = Modifier.weight(1f)
+                            )
+                            MetricCard(
+                                title = "HEADING",
+                                value = headingStr,
+                                icon = Icons.Default.Navigation,
+                                valueColor = MC.AccentPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+                "ignition" -> {
+                    item(key = "field_ignition") {
+                        MetricCard(
+                            title = "IGNITION STATUS",
+                            value = if (ignition) "ENGINE RUNNING" else "ENGINE STOPPED",
+                            icon = Icons.Default.PowerSettingsNew,
+                            valueColor = if (ignition) MC.StatusOnline else MC.StatusOffline,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
-            }
-        }
-
-        // Telemetry Grid
-        item {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                MetricCard(
-                    title = "SPEED",
-                    value = UnitFormatter.speed(speedKmh, isMetric),
-                    icon = Icons.Default.Speed,
-                    valueColor = MC.StatusOnline,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricCard(
-                    title = "HEADING",
-                    value = headingStr,
-                    icon = Icons.Default.Navigation,
-                    valueColor = MC.AccentPrimary,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricCard(
-                    title = "IGNITION",
-                    value = if (ignition) "ON" else "OFF",
-                    icon = Icons.Default.PowerSettingsNew,
-                    valueColor = if (ignition) MC.StatusOnline else MC.StatusOffline,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-
-        item {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                MetricCard(
-                    title = "ALTITUDE",
-                    value = UnitFormatter.altitude(altitude, isMetric),
-                    icon = Icons.Default.FilterHdr,
-                    valueColor = MC.TextPrimary,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricCard(
-                    title = "BATTERY",
-                    value = "$battery%",
-                    icon = Icons.Default.BatteryChargingFull,
-                    valueColor = MC.StatusIdle,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricCard(
-                    title = "FUEL TANK",
-                    value = "$fuel%",
-                    icon = Icons.Default.LocalGasStation,
-                    valueColor = MC.StatusOnline,
-                    modifier = Modifier.weight(1f)
-                )
+                "battery" -> {
+                    item(key = "field_battery") {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            MetricCard(
+                                title = "BATTERY LEVEL",
+                                value = "$battery%",
+                                icon = Icons.Default.BatteryChargingFull,
+                                valueColor = MC.StatusIdle,
+                                modifier = Modifier.weight(1f)
+                            )
+                            MetricCard(
+                                title = "FUEL TANK",
+                                value = "$fuel%",
+                                icon = Icons.Default.LocalGasStation,
+                                valueColor = MC.StatusOnline,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+                "odometer" -> {
+                    item(key = "field_odometer") {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            MetricCard(
+                                title = "ODOMETER",
+                                value = UnitFormatter.distance(odometerKm, isMetric),
+                                icon = Icons.Default.AvTimer,
+                                valueColor = MC.TextPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            MetricCard(
+                                title = "ALTITUDE",
+                                value = UnitFormatter.altitude(altitude, isMetric),
+                                icon = Icons.Default.FilterHdr,
+                                valueColor = MC.TextPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+                "driver" -> {
+                    item(key = "field_driver") {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MC.Surface2),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Badge,
+                                        contentDescription = null,
+                                        tint = MC.AccentPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column {
+                                        Text(
+                                            text = "ASSIGNED DRIVER",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MC.AccentPrimary
+                                        )
+                                        Text(
+                                            text = driverName,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MC.TextPrimary
+                                        )
+                                    }
+                                }
+                                IconButton(
+                                    onClick = onCallDriver,
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .background(MC.StatusOnline.copy(alpha = 0.2f), CircleShape)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Phone,
+                                        contentDescription = "Call Driver",
+                                        tint = MC.StatusOnline,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                "lastupdate" -> {
+                    item(key = "field_lastupdate") {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MC.Surface2),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AccessTime,
+                                    contentDescription = null,
+                                    tint = MC.TextTertiary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "LAST TELEMETRY UPDATE",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MC.TextTertiary
+                                    )
+                                    Text(
+                                        text = lastUpdateStr,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MC.TextPrimary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

@@ -15,7 +15,21 @@
     @com.squareup.moshi.* <fields>;
     @com.squareup.moshi.* <methods>;
 }
--keep class com.example.data.model.** { *; }
+-keep class com.example.data.model.SocketUpdate { *; }
+-keep class com.example.data.model.DeviceCommand { *; }
+-keep class com.example.data.model.TraccarGeofence { *; }
+-keep class com.example.data.model.TraccarPermission { *; }
+-keep class com.example.data.model.DailySummary { *; }
+-keep class com.example.data.model.PeriodReport { *; }
+-keep class com.example.data.model.PeriodType { *; }
+-keep class com.example.data.model.SpeedViolationEvent { *; }
+-keep class com.example.data.model.SpeedingViolationReport { *; }
+-keep class com.example.data.model.GeofenceDwellRecord { *; }
+-keep class com.example.data.model.GeofenceReport { *; }
+-keep class com.example.data.model.Driver { *; }
+-keep class com.example.data.model.Group { *; }
+-keep class com.example.data.model.Server { *; }
+-keep class com.example.data.model.CommandResult { *; }
 -keep class com.example.data.db.** { *; }
 
 # Preserve Room Database and DAOs

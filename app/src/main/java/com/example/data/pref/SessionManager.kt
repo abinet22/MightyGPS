@@ -28,6 +28,7 @@ class SessionManager(context: Context) {
         private const val KEY_MARKER_TRIGGER_MODE = "custom_marker_trigger_mode"
         private const val KEY_INFO_CARD_FIELDS = "custom_info_card_fields"
         private const val KEY_UNIT_SYSTEM = "custom_unit_system"
+        private const val KEY_OVERSPEED_THRESHOLD_KMH = "custom_overspeed_threshold_kmh"
     }
 
     var serverUrl: String
@@ -127,6 +128,10 @@ class SessionManager(context: Context) {
     var unitSystem: String
         get() = try { prefs.getString(KEY_UNIT_SYSTEM, "metric") ?: "metric" } catch (_: Exception) { "metric" }
         set(value) = prefs.edit().putString(KEY_UNIT_SYSTEM, value).apply()
+
+    var overspeedThresholdKmh: Int
+        get() = try { prefs.getInt(KEY_OVERSPEED_THRESHOLD_KMH, 80) } catch (_: Exception) { 80 }
+        set(value) = prefs.edit().putInt(KEY_OVERSPEED_THRESHOLD_KMH, value).apply()
 
     fun logout() {
         prefs.edit().clear().apply()

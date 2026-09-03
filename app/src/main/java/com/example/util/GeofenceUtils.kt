@@ -51,6 +51,30 @@ object GeofenceUtils {
     }
 
     /**
+     * Calculates the destination LatLng from a starting point, distance in meters, and bearing in degrees.
+     */
+    fun computeOffset(
+        lat: Double, lng: Double,
+        distanceMeters: Double,
+        headingDegrees: Double = 90.0
+    ): Pair<Double, Double> {
+        val distanceRatio = distanceMeters / 6371000.0
+        val headingRad = Math.toRadians(headingDegrees)
+        val fromLatRad = Math.toRadians(lat)
+        val fromLngRad = Math.toRadians(lng)
+
+        val toLatRad = asin(
+            sin(fromLatRad) * cos(distanceRatio) +
+            cos(fromLatRad) * sin(distanceRatio) * cos(headingRad)
+        )
+        val toLngRad = fromLngRad + atan2(
+            sin(headingRad) * sin(distanceRatio) * cos(fromLatRad),
+            cos(distanceRatio) - sin(fromLatRad) * sin(toLatRad)
+        )
+        return Pair(Math.toDegrees(toLatRad), Math.toDegrees(toLngRad))
+    }
+
+    /**
      * Determines whether a given lat/lng position is inside a custom geofence.
      */
     fun isPositionInsideGeofence(

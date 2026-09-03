@@ -36,9 +36,11 @@ import com.example.ui.viewmodel.TraccarViewModel
 import com.example.util.GeofenceUtils
 import com.example.util.ReportDataLoader
 import com.example.util.ReportReconciliationManager
+import com.example.util.ReportStateHolder
 import com.example.util.TelemetrySanitizerService
 import com.example.util.UnitFormatter
 import com.example.util.generatePdfReport
+import com.example.util.rememberReportState
 import com.example.util.sharePdfReport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -79,54 +81,11 @@ fun ReportsTab(
         var reportTimeframeType by remember { mutableStateOf("Today") }
         var reportCategoryType by remember { mutableStateOf("Summary") }
 
-        var summaryResults by remember { mutableStateOf<List<ReportSummary>>(emptyList()) }
-        var tripResults by remember { mutableStateOf<List<ReportTrip>>(emptyList()) }
-        var stopResults by remember { mutableStateOf<List<ReportStop>>(emptyList()) }
-        var routeResults by remember { mutableStateOf<List<Position>>(emptyList()) }
-        var eventResults by remember { mutableStateOf<List<Event>>(emptyList()) }
-        var periodReport by remember { mutableStateOf<PeriodReport?>(null) }
-        var reportLoading by remember { mutableStateOf(false) }
+        val reportState = rememberReportState(viewModel, scope)
 
         val loadReportForAssetAndTimeframe: (Long, String) -> Unit = { devId, timeframe ->
-            // Immediately clear all existing results to prevent stale data display
-            summaryResults = emptyList()
-            tripResults = emptyList()
-            stopResults = emptyList()
-            routeResults = emptyList()
-            eventResults = emptyList()
-            periodReport = null
-            reportLoading = true
-            scope.launch {
-                try {
-                    val (fromStr, toStr) = TelemetrySanitizerService.computeRange(timeframe)
-
-                    if (timeframe in listOf("Today", "Weekly", "Monthly")) {
-                        val periodType = when (timeframe) {
-                            "Weekly" -> PeriodType.WEEKLY
-                            "Monthly" -> PeriodType.MONTHLY
-                            else -> PeriodType.DAILY
-                        }
-                        val reconciled = try {
-                            viewModel.queryReconciledPeriodReport(devId, periodType)
-                        } catch (_: Exception) {
-                            null
-                        }
-                        periodReport = reconciled
-                    }
-
-                    val bundle = ReportDataLoader.load(viewModel.repository, devId, fromStr, toStr)
-                    summaryResults = bundle.summaries
-                    tripResults = bundle.trips
-                    stopResults = bundle.stops
-                    routeResults = bundle.route
-                    eventResults = bundle.events
-
-                    viewModel.triggerFeedback("Report compiled for $timeframe: ${bundle.trips.size} trips, ${bundle.stops.size} stops, ${bundle.events.size} events")
-                } catch (e: Exception) {
-                    viewModel.triggerFeedback("Query failed: " + e.message)
-                } finally {
-                    reportLoading = false
-                }
+            reportState.load(devId, timeframe) {
+                viewModel.triggerFeedback("Report compiled for $timeframe: ${reportState.trips.size} trips, ${reportState.stops.size} stops, ${reportState.events.size} events")
             }
         }
 
@@ -282,12 +241,12 @@ fun ReportsTab(
                             loadReportForAssetAndTimeframe(devId, reportTimeframeType)
                         }
                     },
-                    enabled = selectedAssetForReport != null && !reportLoading,
+                    enabled = selectedAssetForReport != null && !reportState.isLoading,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = MC.AccentPrimary),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    if (reportLoading) {
+                    if (reportState.isLoading && !reportState.isCacheHit) {
                         CircularProgressIndicator(color = MC.TextPrimary, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                     } else {
                         Icon(Icons.Default.Assessment, contentDescription = null, tint = MC.TextPrimary, modifier = Modifier.size(16.dp))
@@ -298,48 +257,23 @@ fun ReportsTab(
             }
         }
 
-        if (reportLoading) {
+        if (reportState.isLoading && !reportState.isCacheHit) {
             Spacer(modifier = Modifier.height(16.dp))
             ReportSkeletonLoader(modifier = Modifier.fillMaxWidth())
         }
 
         var anomalyDismissed by remember(selectedAssetForReport, reportTimeframeType) { mutableStateOf(false) }
 
-        if (!reportLoading && selectedAssetForReport != null && (summaryResults.isNotEmpty() || tripResults.isNotEmpty() || routeResults.isNotEmpty() || periodReport != null)) {
+        if ((!reportState.isLoading || reportState.isCacheHit) && selectedAssetForReport != null && (reportState.summaries.isNotEmpty() || reportState.trips.isNotEmpty() || reportState.route.isNotEmpty() || reportState.periodReport != null)) {
             val currentDev = devices.find { it.id == selectedAssetForReport }
-            val speedingViolationsCount = remember(eventResults) {
-                val alarms = eventResults.count { it.type == "alarm" || it.attributes.containsKey("alarm") }
-                val speedEvents = eventResults.count { it.type.contains("speed", ignoreCase = true) || it.attributes.containsKey("speed") }
-                maxOf(alarms, speedEvents)
-            }
-            val geofenceBreaksCount = remember(eventResults) {
-                eventResults.count { it.type.contains("geofence", ignoreCase = true) }
-            }
+            val speedingViolationsCount = reportState.speedingViolationsCount
+            val geofenceBreaksCount = reportState.geofenceBreaksCount
 
-            val totalDistKm = periodReport?.totalDistanceKm
-                ?: summaryResults.firstOrNull()?.distanceKm
-                ?: tripResults.sumOf { it.distanceKm }.takeIf { it > 0 }
-                ?: 0.0
-            val avgSpd = periodReport?.weightedAverageSpeedKmh?.takeIf { it > 0.1 }
-                ?: summaryResults.firstOrNull()?.averageSpeedKmh?.takeIf { it > 0.1 }
-                ?: tripResults.mapNotNull { it.averageSpeedKmh.takeIf { s -> s > 0.1 } }.average().takeIf { !it.isNaN() && it > 0.1 }
-                ?: (if (totalDistKm > 0.1) 36.5 else 0.0)
-            val maxSpd = periodReport?.maxSpeedKmh?.takeIf { it > 0.1 }
-                ?: summaryResults.firstOrNull()?.maxSpeedKmh?.takeIf { it > 0.1 }
-                ?: tripResults.mapNotNull { it.maxSpeedKmh.takeIf { s -> s > 0.1 } }.maxOrNull()
-                ?: (if (totalDistKm > 0.1) 78.0 else 0.0)
-            val fuelLiters = periodReport?.totalFuelLiters?.takeIf { it > 0 }
-                ?: summaryResults.firstOrNull()?.spentFuel
-                ?: (totalDistKm * 0.092)
-            val engineRuntime = if (periodReport != null && periodReport!!.totalEngineHoursMs > 0) {
-                val totalSeconds = periodReport!!.totalEngineHoursMs / 1000
-                val hours = totalSeconds / 3600
-                val minutes = (totalSeconds % 3600) / 60
-                "${hours}h ${minutes}m"
-            } else {
-                summaryResults.firstOrNull()?.engineHoursFormatted
-                    ?: "${(totalDistKm / maxOf(1.0, avgSpd)).toInt()}h ${(((totalDistKm / maxOf(1.0, avgSpd)) % 1) * 60).toInt()}m"
-            }
+            val totalDistKm = reportState.totalDistanceKm
+            val avgSpd = reportState.averageSpeedKmh
+            val maxSpd = reportState.maxSpeedKmh
+            val fuelLiters = reportState.spentFuelLiters
+            val engineRuntime = reportState.engineRuntimeFormatted
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -417,7 +351,7 @@ fun ReportsTab(
                 )
                 MetricBox(
                     title = "Trips / Stops",
-                    value = "${tripResults.size} / ${stopResults.size}",
+                    value = "${reportState.trips.size} / ${reportState.stops.size}",
                     color = MC.StatusOnline,
                     modifier = Modifier.weight(1f)
                 )
@@ -447,12 +381,12 @@ fun ReportsTab(
                             appendLine("Max Speed   : $formattedMaxSpd")
                             appendLine("Fuel Spent  : ${String.format(Locale.US, "%.1f L", fuelLiters)}")
                             appendLine("Engine Hours: $engineRuntime")
-                            appendLine("Trips Count : ${tripResults.size}")
-                            appendLine("Stops Count : ${stopResults.size}")
+                            appendLine("Trips Count : ${reportState.trips.size}")
+                            appendLine("Stops Count : ${reportState.stops.size}")
                             appendLine("-----------------------------------------")
-                            if (tripResults.isNotEmpty()) {
+                            if (reportState.trips.isNotEmpty()) {
                                 appendLine("TRIP BREAKDOWNS:")
-                                tripResults.forEachIndexed { i, trip ->
+                                reportState.trips.forEachIndexed { i, trip ->
                                     appendLine(" Trip #${i + 1} (${trip.timeRangeFormatted}): ${trip.startAddress ?: "Origin"} -> ${trip.endAddress ?: "Destination"}")
                                     appendLine("   Duration: ${trip.durationFormatted} | Distance: ${UnitFormatter.distance(trip.distanceKm, isMetric)} | Driver: ${trip.driverName ?: "N/A"}")
                                 }
@@ -490,11 +424,11 @@ fun ReportsTab(
                                         maxSpeed = formattedMaxSpd,
                                         spentFuel = String.format(Locale.US, "%.1f L", fuelLiters),
                                         engineHours = engineRuntime,
-                                        speedingViolations = eventResults.count { it.type == "alarm" || it.attributes.containsKey("alarm") }.toString(),
-                                        geofenceBreaks = eventResults.count { it.type.contains("geofence", ignoreCase = true) }.toString(),
-                                        trips = tripResults,
-                                        stops = stopResults,
-                                        events = eventResults
+                                        speedingViolations = reportState.events.count { it.type == "alarm" || it.attributes.containsKey("alarm") }.toString(),
+                                        geofenceBreaks = reportState.events.count { it.type.contains("geofence", ignoreCase = true) }.toString(),
+                                        trips = reportState.trips,
+                                        stops = reportState.stops,
+                                        events = reportState.events
                                     )
                                 }
                                 if (pdfFile != null) {
@@ -514,10 +448,10 @@ fun ReportsTab(
             }
 
             // DAILY ACTIVITY TREND BAR CHART (If weekly / monthly report with daily breakdown)
-            if (periodReport != null && periodReport!!.dailyBreakdown.isNotEmpty()) {
+            if (reportState.periodReport != null && reportState.periodReport!!.dailyBreakdown.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(12.dp))
                 DailyTrendBarChart(
-                    dailyBreakdown = periodReport!!.dailyBreakdown,
+                    dailyBreakdown = reportState.periodReport!!.dailyBreakdown,
                     isMetric = isMetric
                 )
             }
@@ -527,19 +461,19 @@ fun ReportsTab(
             // Content based on selected category tab
             when (reportCategoryType) {
                 "Trips" -> {
-                    val displayTrips = remember(tripResults) { tripResults.take(10) }
+                    val displayTrips = remember(reportState.trips) { reportState.trips.take(10) }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Trips Log (${tripResults.size} Total)",
+                            text = "Trips Log (${reportState.trips.size} Total)",
                             color = MC.TextPrimary,
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
-                        if (tripResults.size > 10) {
+                        if (reportState.trips.size > 10) {
                             Text(
                                 text = "Showing 10 recent",
                                 color = MC.AccentPrimary,
@@ -549,7 +483,7 @@ fun ReportsTab(
                     }
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    if (tripResults.isEmpty()) {
+                    if (reportState.trips.isEmpty()) {
                         EmptyStateView(
                             icon = Icons.Default.DirectionsCar,
                             title = "No trips logged",
@@ -615,14 +549,14 @@ fun ReportsTab(
                             }
                         }
 
-                        if (tripResults.size > 10) {
+                        if (reportState.trips.size > 10) {
                             Card(
                                 colors = CardDefaults.cardColors(containerColor = MC.Surface2),
                                 shape = RoundedCornerShape(6.dp),
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                             ) {
                                 Text(
-                                    text = "Showing 10 of ${tripResults.size} trips. Full trip logs available in Export PDF.",
+                                    text = "Showing 10 of ${reportState.trips.size} trips. Full trip logs available in Export PDF.",
                                     color = MC.TextSecondary,
                                     style = MaterialTheme.typography.labelSmall,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
@@ -632,19 +566,19 @@ fun ReportsTab(
                     }
                 }
                 "Stops" -> {
-                    val displayStops = remember(stopResults) { stopResults.take(10) }
+                    val displayStops = remember(reportState.stops) { reportState.stops.take(10) }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Stops Log (${stopResults.size} Total)",
+                            text = "Stops Log (${reportState.stops.size} Total)",
                             color = MC.TextPrimary,
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
-                        if (stopResults.size > 10) {
+                        if (reportState.stops.size > 10) {
                             Text(
                                 text = "Showing 10 recent",
                                 color = MC.AccentPrimary,
@@ -654,7 +588,7 @@ fun ReportsTab(
                     }
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    if (stopResults.isEmpty()) {
+                    if (reportState.stops.isEmpty()) {
                         EmptyStateView(
                             icon = Icons.Default.Place,
                             title = "No stops recorded",
@@ -717,14 +651,14 @@ fun ReportsTab(
                             }
                         }
 
-                        if (stopResults.size > 10) {
+                        if (reportState.stops.size > 10) {
                             Card(
                                 colors = CardDefaults.cardColors(containerColor = MC.Surface2),
                                 shape = RoundedCornerShape(6.dp),
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                             ) {
                                 Text(
-                                    text = "Showing 10 of ${stopResults.size} stops. Full stops log available in Export PDF.",
+                                    text = "Showing 10 of ${reportState.stops.size} stops. Full stops log available in Export PDF.",
                                     color = MC.TextSecondary,
                                     style = MaterialTheme.typography.labelSmall,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
@@ -734,19 +668,19 @@ fun ReportsTab(
                     }
                 }
                 "Safety" -> {
-                    val displayEvents = remember(eventResults) { eventResults.take(10) }
+                    val displayEvents = remember(reportState.events) { reportState.events.take(10) }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Safety Alarms (${eventResults.size} Total)",
+                            text = "Safety Alarms (${reportState.events.size} Total)",
                             color = MC.TextPrimary,
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
-                        if (eventResults.size > 10) {
+                        if (reportState.events.size > 10) {
                             Text(
                                 text = "Showing 10 recent",
                                 color = MC.AccentPrimary,
@@ -756,7 +690,7 @@ fun ReportsTab(
                     }
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    if (eventResults.isEmpty()) {
+                    if (reportState.events.isEmpty()) {
                         EmptyStateView(
                             icon = Icons.Default.CheckCircle,
                             title = "Clean Safety Record",
@@ -785,14 +719,14 @@ fun ReportsTab(
                             }
                         }
 
-                        if (eventResults.size > 10) {
+                        if (reportState.events.size > 10) {
                             Card(
                                 colors = CardDefaults.cardColors(containerColor = MC.Surface2),
                                 shape = RoundedCornerShape(6.dp),
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                             ) {
                                 Text(
-                                    text = "Showing 10 of ${eventResults.size} alerts. Full alerts history available in Export PDF.",
+                                    text = "Showing 10 of ${reportState.events.size} alerts. Full alerts history available in Export PDF.",
                                     color = MC.TextSecondary,
                                     style = MaterialTheme.typography.labelSmall,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
@@ -828,7 +762,7 @@ fun ReportsTab(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text("Logged Trips", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
-                                Text("${tripResults.size} completed", color = MC.AccentPrimary, style = MaterialTheme.typography.titleSmall)
+                                Text("${reportState.trips.size} completed", color = MC.AccentPrimary, style = MaterialTheme.typography.titleSmall)
                             }
                             HorizontalDivider(color = MC.Surface3)
 
@@ -838,7 +772,7 @@ fun ReportsTab(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text("Stops & Parked Periods", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
-                                Text("${stopResults.size} logged", color = MC.StatusOnline, style = MaterialTheme.typography.titleSmall)
+                                Text("${reportState.stops.size} logged", color = MC.StatusOnline, style = MaterialTheme.typography.titleSmall)
                             }
                             HorizontalDivider(color = MC.Surface3)
 
@@ -849,26 +783,26 @@ fun ReportsTab(
                             ) {
                                 Text("Safety Alerts & Geofences", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
                                 Text(
-                                    "${eventResults.size} alerts",
-                                    color = if (eventResults.isNotEmpty()) MC.StatusOffline else MC.StatusOnline,
+                                    "${reportState.events.size} alerts",
+                                    color = if (reportState.events.isNotEmpty()) MC.StatusOffline else MC.StatusOnline,
                                     style = MaterialTheme.typography.titleSmall
                                 )
                             }
                         }
                     }
 
-                    if (periodReport != null && periodReport!!.dailyBreakdown.isNotEmpty()) {
+                    if (reportState.periodReport != null && reportState.periodReport!!.dailyBreakdown.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(14.dp))
                         DailyBreakdownTable(
-                            dailyBreakdown = periodReport!!.dailyBreakdown,
+                            dailyBreakdown = reportState.periodReport!!.dailyBreakdown,
                             isMetric = isMetric
                         )
                     }
 
-                    if (tripResults.isNotEmpty()) {
+                    if (reportState.trips.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(10.dp))
                         Text("Latest Trip Highlight", color = MC.TextPrimary, style = MaterialTheme.typography.titleSmall)
-                        val latestTrip = tripResults.first()
+                        val latestTrip = reportState.trips.first()
                         Card(
                             colors = CardDefaults.cardColors(containerColor = MC.Surface2),
                             shape = RoundedCornerShape(10.dp),

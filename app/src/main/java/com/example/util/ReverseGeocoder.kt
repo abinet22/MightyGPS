@@ -9,6 +9,8 @@ import android.util.LruCache
 import com.example.data.model.ReportStop
 import com.example.data.model.ReportTrip
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.abs
@@ -102,42 +104,46 @@ object ReverseGeocoder {
     suspend fun enhanceTrips(context: Context, trips: List<ReportTrip>): List<ReportTrip> {
         return withContext(Dispatchers.IO) {
             trips.map { trip ->
-                var startAddr = trip.startAddress
-                if (startAddr.isNullOrBlank() || startAddr == "Origin" || startAddr == "N/A") {
-                    if (trip.startLat != 0.0 || trip.startLon != 0.0) {
-                        startAddr = getAddress(context, trip.startLat, trip.startLon)
+                async {
+                    var startAddr = trip.startAddress
+                    if (startAddr.isNullOrBlank() || startAddr == "Origin" || startAddr == "N/A") {
+                        if (trip.startLat != 0.0 || trip.startLon != 0.0) {
+                            startAddr = getAddress(context, trip.startLat, trip.startLon)
+                        }
                     }
-                }
 
-                var endAddr = trip.endAddress
-                if (endAddr.isNullOrBlank() || endAddr == "Destination" || endAddr == "N/A") {
-                    if (trip.endLat != 0.0 || trip.endLon != 0.0) {
-                        endAddr = getAddress(context, trip.endLat, trip.endLon)
+                    var endAddr = trip.endAddress
+                    if (endAddr.isNullOrBlank() || endAddr == "Destination" || endAddr == "N/A") {
+                        if (trip.endLat != 0.0 || trip.endLon != 0.0) {
+                            endAddr = getAddress(context, trip.endLat, trip.endLon)
+                        }
                     }
-                }
 
-                trip.copy(
-                    startAddress = startAddr ?: "Logistics Terminal A",
-                    endAddress = endAddr ?: "Distribution Center B"
-                )
-            }
+                    trip.copy(
+                        startAddress = startAddr ?: "Logistics Terminal A",
+                        endAddress = endAddr ?: "Distribution Center B"
+                    )
+                }
+            }.awaitAll()
         }
     }
 
     suspend fun enhanceStops(context: Context, stops: List<ReportStop>): List<ReportStop> {
         return withContext(Dispatchers.IO) {
             stops.map { stop ->
-                var addr = stop.address
-                if (addr.isNullOrBlank() || addr == "Staging Facility" || addr == "N/A") {
-                    if (stop.latitude != 0.0 || stop.longitude != 0.0) {
-                        addr = getAddress(context, stop.latitude, stop.longitude)
+                async {
+                    var addr = stop.address
+                    if (addr.isNullOrBlank() || addr == "Staging Facility" || addr == "N/A") {
+                        if (stop.latitude != 0.0 || stop.longitude != 0.0) {
+                            addr = getAddress(context, stop.latitude, stop.longitude)
+                        }
                     }
-                }
 
-                stop.copy(
-                    address = addr ?: "Fleet Parking Facility"
-                )
-            }
+                    stop.copy(
+                        address = addr ?: "Fleet Parking Facility"
+                    )
+                }
+            }.awaitAll()
         }
     }
 }

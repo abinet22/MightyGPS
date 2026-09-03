@@ -60,6 +60,11 @@ class TraccarRepository(private val context: Context) {
         eventsCache.evictAll()
     }
 
+    fun hasReportCache(deviceId: Long?, from: String, to: String): Boolean {
+        val cacheKey = "${deviceId ?: "all"}:$from:$to"
+        return summaryCache.get(cacheKey) != null || tripsCache.get(cacheKey) != null
+    }
+
     // Sandbox Simulation helpers
     private var isSimulating = false
     private val simulatedPositions = mutableMapOf<Long, Position>()
@@ -143,11 +148,19 @@ class TraccarRepository(private val context: Context) {
         }
     }
 
+    private var lastPositionEmissionTime = 0L
+
     private fun handleSocketUpdate(update: SocketUpdate) {
         update.positions?.let { positions ->
             val current = _realtimePositions.value.toMutableMap()
             positions.forEach { current[it.deviceId] = it }
-            _realtimePositions.value = current
+            
+            val now = System.currentTimeMillis()
+            val throttleIntervalMs = (sessionManager.positionUpdateInterval).coerceAtLeast(1) * 1000L
+            if (now - lastPositionEmissionTime >= throttleIntervalMs || _realtimePositions.value.isEmpty()) {
+                lastPositionEmissionTime = now
+                _realtimePositions.value = current
+            }
             
             // Cache positions on the local database for offline usage in background thread
             scope.launch(Dispatchers.IO) {

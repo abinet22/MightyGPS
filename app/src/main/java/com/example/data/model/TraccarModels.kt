@@ -95,7 +95,6 @@ data class TraccarPermission(
     val groupId: Long? = null
 )
 
-@JsonClass(generateAdapter = true)
 data class ReportSummary(
     val deviceId: Long = 0,
     val deviceName: String = "",
@@ -117,7 +116,6 @@ data class ReportSummary(
         }
 }
 
-@JsonClass(generateAdapter = true)
 data class ReportTrip(
     val deviceId: Long = 0,
     val deviceName: String = "",
@@ -161,7 +159,6 @@ data class ReportTrip(
         }
 }
 
-@JsonClass(generateAdapter = true)
 data class ReportStop(
     val deviceId: Long = 0,
     val deviceName: String = "",

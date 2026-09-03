@@ -107,6 +107,7 @@ fun DashboardScreen(
     val markerTriggerMode by viewModel.markerTriggerMode.collectAsState()
     val infoCardFields by viewModel.infoCardFields.collectAsState()
     val unitSystem by viewModel.unitSystem.collectAsState()
+    val overspeedThresholdKmh by viewModel.overspeedThresholdKmh.collectAsState()
     val geofences by viewModel.geofences.collectAsState()
     val isGeofenceLayerVisible by viewModel.isGeofenceLayerVisible.collectAsState()
     val selectedGeofenceDetail by viewModel.selectedGeofence.collectAsState()
@@ -433,7 +434,7 @@ fun DashboardScreen(
                     selected = currentTab == 0,
                     onClick = { currentTab = 0 },
                     icon = { Icon(Icons.Default.List, contentDescription = "Reports") },
-                    label = { Text(if (viewModel.appLanguage.value == "es") "Reportes" else if (viewModel.appLanguage.value == "am") "ሪፖርቶች" else "Reports", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold) },
+                    label = { Text(if (viewModel.appLanguage.value == "am") "ሪፖርቶች" else if (viewModel.appLanguage.value == "om") "Gabaasawwan" else "Reports", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold) },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = MC.AccentPrimary,
                         selectedTextColor = MC.TextPrimary,
@@ -923,6 +924,7 @@ fun DashboardScreen(
                             viewModel = viewModel,
                             appLanguage = appLanguage,
                             unitSystem = unitSystem,
+                            overspeedThresholdKmh = overspeedThresholdKmh,
                             mapProviderStyle = mapProviderStyle,
                             markerLabelStyle = markerLabelStyle,
                             markerIconStyle = markerIconStyle,
@@ -1054,6 +1056,7 @@ fun DashboardScreen(
             position = detailPos,
             recentEvents = emptyList(),
             unitSystem = unitSystem,
+            infoCardFields = infoCardFields,
             onDismissRequest = { showDeviceDetailSheet = false },
             onPlaybackClick = { devId ->
                 showDeviceDetailSheet = false

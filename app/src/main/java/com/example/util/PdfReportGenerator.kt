@@ -199,7 +199,9 @@ fun generatePdfReport(
         canvas.drawText("No driving trips recorded for this timeframe.", 30f, y + 16f, textPaint)
         y += 32f
     } else {
-        trips.forEachIndexed { idx, trip ->
+        val maxPdfTrips = 200
+        val displayTrips = trips.take(maxPdfTrips)
+        displayTrips.forEachIndexed { idx, trip ->
             val tripBoxHeight = 58f
             ensurePageSpace(tripBoxHeight + 8f)
 
@@ -247,6 +249,13 @@ fun generatePdfReport(
 
             y += tripBoxHeight + 6f
         }
+        if (trips.size > maxPdfTrips) {
+            ensurePageSpace(24f)
+            textPaint.color = AndroidColor.parseColor("#94A3B8")
+            textPaint.textSize = 8.5f
+            canvas.drawText("Note: Showing first $maxPdfTrips of ${trips.size} total trips.", 30f, y + 14f, textPaint)
+            y += 24f
+        }
         y += 10f
     }
 
@@ -268,7 +277,9 @@ fun generatePdfReport(
         canvas.drawText("No parking or idling stops logged for this timeframe.", 30f, y + 16f, textPaint)
         y += 32f
     } else {
-        stops.forEachIndexed { idx, stop ->
+        val maxPdfStops = 200
+        val displayStops = stops.take(maxPdfStops)
+        displayStops.forEachIndexed { idx, stop ->
             val stopBoxHeight = 44f
             ensurePageSpace(stopBoxHeight + 6f)
 
@@ -305,6 +316,13 @@ fun generatePdfReport(
             canvas.drawText(if (locLabel.length > 90) locLabel.take(87) + "..." else locLabel, 32f, y + 30f, textPaint)
 
             y += stopBoxHeight + 5f
+        }
+        if (stops.size > maxPdfStops) {
+            ensurePageSpace(24f)
+            textPaint.color = AndroidColor.parseColor("#94A3B8")
+            textPaint.textSize = 8.5f
+            canvas.drawText("Note: Showing first $maxPdfStops of ${stops.size} total stops.", 30f, y + 14f, textPaint)
+            y += 24f
         }
         y += 10f
     }

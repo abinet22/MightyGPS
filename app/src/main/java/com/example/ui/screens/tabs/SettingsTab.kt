@@ -7,6 +7,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.ui.theme.MC
 import com.example.ui.viewmodel.TraccarViewModel
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -145,6 +147,7 @@ fun SettingsTab(
     viewModel: TraccarViewModel,
     appLanguage: String,
     unitSystem: String = "metric",
+    overspeedThresholdKmh: Int = 80,
     mapProviderStyle: String,
     markerLabelStyle: String,
     markerIconStyle: String,
@@ -572,15 +575,19 @@ fun SettingsTab(
                 style = MaterialTheme.typography.titleSmall,
                 color = MC.TextPrimary
             )
+            Text(
+                text = "Choose whether telemetry badges show only when a vehicle pin is tapped or stay continuously expanded for all fleet assets.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MC.TextSecondary
+            )
             val triggerModes = listOf(
-                "click" to "On Click",
-                "hover" to "On Hover",
-                "always" to "Always Show"
+                "click" to "On Tap (Selected)",
+                "always" to "Always Show All"
             )
             SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                 triggerModes.forEachIndexed { i, (modeKey, label) ->
                     SegmentedButton(
-                        selected = markerTriggerMode == modeKey,
+                        selected = markerTriggerMode == modeKey || (modeKey == "click" && markerTriggerMode != "always"),
                         onClick = { viewModel.setMarkerTriggerMode(modeKey) },
                         shape = SegmentedButtonDefaults.itemShape(index = i, count = triggerModes.size),
                         colors = SegmentedButtonDefaults.colors(
@@ -602,7 +609,7 @@ fun SettingsTab(
         SettingsSectionCard(
             title = "Info Card Fields & Ordering",
             icon = Icons.Default.List,
-            description = "Select telemetry attributes to display on the map marker card. Use arrows to reorder."
+            description = "Customize and reorder telemetry attributes displayed on map marker badges and inside the Vehicle Details bottom sheet. Use arrows to reorder."
         ) {
             val allAvailableFields = listOf(
                 "name" to "Vehicle Name & Plate Number",
@@ -722,7 +729,131 @@ fun SettingsTab(
         }
 
         // ==========================================
-        // 5. PERFORMANCE & STORAGE
+        // 5. SAFETY & ANOMALY THRESHOLDS
+        // ==========================================
+        SettingsSectionCard(
+            title = "Safety & Overspeed Thresholds",
+            icon = Icons.Default.WarningAmber,
+            description = "Define global velocity caps and anomaly triggers for fleet reports",
+            initiallyExpanded = true
+        ) {
+            val isMetric = unitSystem == "metric"
+            val speedDisplay = if (isMetric) {
+                "$overspeedThresholdKmh km/h (${(overspeedThresholdKmh * 0.621371).roundToInt()} mph)"
+            } else {
+                "${(overspeedThresholdKmh * 0.621371).roundToInt()} mph ($overspeedThresholdKmh km/h)"
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Global Overspeed Limit",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MC.TextPrimary
+                    )
+                    Text(
+                        text = "Threshold applied to flag speeding violations in telematics analytics and report anomaly banners.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MC.TextSecondary
+                    )
+                }
+                Surface(
+                    color = MC.StatusOffline.copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, MC.StatusOffline.copy(alpha = 0.5f))
+                ) {
+                    Text(
+                        text = speedDisplay,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MC.StatusOffline
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Quick Preset Buttons
+            val presets = listOf(
+                60 to if (isMetric) "60 km/h" else "37 mph",
+                80 to if (isMetric) "80 km/h" else "50 mph",
+                100 to if (isMetric) "100 km/h" else "62 mph",
+                120 to if (isMetric) "120 km/h" else "75 mph"
+            )
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                presets.forEachIndexed { i, (presetKmh, label) ->
+                    SegmentedButton(
+                        selected = overspeedThresholdKmh == presetKmh,
+                        onClick = { viewModel.setOverspeedThresholdKmh(presetKmh) },
+                        shape = SegmentedButtonDefaults.itemShape(index = i, count = presets.size),
+                        colors = SegmentedButtonDefaults.colors(
+                            activeContainerColor = MC.StatusOffline,
+                            activeContentColor = Color.White,
+                            inactiveContainerColor = MC.Surface2,
+                            inactiveContentColor = MC.TextSecondary
+                        )
+                    ) {
+                        Text(label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+
+            // Fine-Tuning Slider
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("30 km/h", style = MaterialTheme.typography.labelSmall, color = MC.TextTertiary)
+                    Text("Fine-tune Velocity Cap", style = MaterialTheme.typography.labelSmall, color = MC.TextSecondary)
+                    Text("160 km/h", style = MaterialTheme.typography.labelSmall, color = MC.TextTertiary)
+                }
+                Slider(
+                    value = overspeedThresholdKmh.toFloat().coerceIn(30f, 160f),
+                    onValueChange = { viewModel.setOverspeedThresholdKmh((it / 5).roundToInt() * 5) },
+                    valueRange = 30f..160f,
+                    steps = 25,
+                    colors = SliderDefaults.colors(
+                        thumbColor = MC.StatusOffline,
+                        activeTrackColor = MC.StatusOffline,
+                        inactiveTrackColor = MC.Surface3
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Surface(
+                color = MC.Surface2,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = MC.AccentPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Geofence-specific speed limits (configured per zone) take precedence when a vehicle is inside that geofence.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MC.TextSecondary
+                    )
+                }
+            }
+        }
+
+        // ==========================================
+        // 6. PERFORMANCE & STORAGE
         // ==========================================
         SettingsSectionCard(
             title = "Performance & Storage",

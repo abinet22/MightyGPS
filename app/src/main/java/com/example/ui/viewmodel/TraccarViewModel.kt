@@ -16,6 +16,8 @@ import com.example.ui.map.MapMarker
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -148,6 +150,9 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
     private val _unitSystem = MutableStateFlow(sessionManager.unitSystem)
     val unitSystem: StateFlow<String> = _unitSystem.asStateFlow()
 
+    private val _overspeedThresholdKmh = MutableStateFlow(sessionManager.overspeedThresholdKmh)
+    val overspeedThresholdKmh: StateFlow<Int> = _overspeedThresholdKmh.asStateFlow()
+
     // Data holder for custom local geofences
     data class CustomGeofence(
         val id: String,
@@ -262,7 +267,12 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
         _unitSystem.value = system
     }
 
-    fun addGeofence(
+    fun setOverspeedThresholdKmh(thresholdKmh: Int) {
+        sessionManager.overspeedThresholdKmh = thresholdKmh
+        _overspeedThresholdKmh.value = thresholdKmh
+    }
+
+    suspend fun addGeofenceAsync(
         name: String, 
         lat: Double, 
         lng: Double, 
@@ -272,8 +282,8 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
         deviceId: Long? = null,
         triggerOnEnter: Boolean = true,
         triggerOnExit: Boolean = true
-    ) {
-        viewModelScope.launch {
+    ): CustomGeofence {
+        return withContext(Dispatchers.IO) {
             try {
                 _feedbackMessage.value = "Creating geofence $name..."
                 
@@ -326,6 +336,7 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 }
 
                 _geofences.value = _geofences.value + newGf
+                newGf
             } catch (e: Exception) {
                 Log.e("TraccarViewModel", "Failed to create geofence", e)
                 _feedbackMessage.value = "Sync code error: ${e.message}. Offline preservation activated."
@@ -351,7 +362,34 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                     targetDeviceId = deviceId
                 )
                 _geofences.value = _geofences.value + newGf
+                newGf
             }
+        }
+    }
+
+    fun addGeofence(
+        name: String, 
+        lat: Double, 
+        lng: Double, 
+        radius: Double, 
+        type: String = "circle", 
+        points: List<Pair<Double, Double>> = emptyList(), 
+        deviceId: Long? = null,
+        triggerOnEnter: Boolean = true,
+        triggerOnExit: Boolean = true
+    ) {
+        viewModelScope.launch {
+            addGeofenceAsync(
+                name = name,
+                lat = lat,
+                lng = lng,
+                radius = radius,
+                type = type,
+                points = points,
+                deviceId = deviceId,
+                triggerOnEnter = triggerOnEnter,
+                triggerOnExit = triggerOnExit
+            )
         }
     }
 
@@ -519,42 +557,6 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 "command_payload" to "Ergaa Ajajaa",
                 "tenant_mode" to "Mighty GPS SaaS Qarshii",
                 "assigned_vehicles" to "Konkolaattota Sitti Ramadaman"
-            )
-            "es" -> mapOf(
-                "active_fleet" to "Flota Activa",
-                "map_style" to "Estilo de Mapa",
-                "language" to "Idioma",
-                "marker_label" to "Etiqueta de Marcador",
-                "marker_icon" to "Icono de Marcador",
-                "send_command" to "Enviar Comando",
-                "geofence" to "Geovallas",
-                "settings" to "Ajustes",
-                "playback" to "Historial",
-                "devices" to "Dispositivos",
-                "alerts" to "Alertas",
-                "saas_console" to "Consola SaaS",
-                "create_geofence" to "Crear Geovalla",
-                "command" to "Comando de Gps",
-                "commands" to "Registro de Comandos",
-                "plate_number" to "Número de Placa",
-                "device_name" to "Nombre de Dispositivo",
-                "coordinates" to "Coordenadas Gps",
-                "select_device" to "Seleccionar Dispositivo",
-                "speed" to "Velocidad",
-                "status" to "Estado",
-                "customization_panel" to "Personalización del Cliente",
-                "engine_status" to "Estado del Motor",
-                "engine_kill" to "Detener Motor",
-                "unblock_engine" to "Reanudar Motor",
-                "ping_asset" to "Ping Localizador",
-                "reboot_gps" to "Reiniciar Localizador",
-                "geofence_name" to "Nombre de Geovalla",
-                "radius" to "Radio (metros)",
-                "save_geofence" to "Guardar Geovalla",
-                "no_geofences" to "No hay geovallas configuradas.",
-                "command_payload" to "Parámetros del Comando",
-                "tenant_mode" to "Mighty GPS - Acceso Enterprise",
-                "assigned_vehicles" to "Equipos asignados para visualización"
             )
             else -> mapOf(
                 "active_fleet" to "Active Fleet",
@@ -1016,6 +1018,22 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 if (!plateOrModel.isNullOrBlank()) append("Plate: $plateOrModel • ")
                 append(String.format("%.1f km/h", spd))
             }
+            val driver = (pos?.attributes?.get("driverUniqueId") as? String)
+                ?: (device.attributes["driver"] as? String)
+                ?: (device.attributes["driverName"] as? String)
+                ?: device.contact
+                ?: "Assigned Driver"
+            val batt = (pos?.attributes?.get("batteryLevel") as? Number)?.toInt()
+                ?: (device.attributes["batteryLevel"] as? Number)?.toInt()
+                ?: (pos?.attributes?.get("battery") as? Number)?.toInt()
+                ?: 94
+            val odo = (pos?.attributes?.get("totalDistance") as? Number)?.toDouble()?.let { it / 1000.0 }
+                ?: (device.attributes["odometer"] as? Number)?.toDouble()
+                ?: 14820.5
+            val ign = (pos?.attributes?.get("ignition") as? Boolean)
+                ?: (device.attributes["ignition"] as? Boolean)
+                ?: true
+
             MapMarker(
                 id = device.id,
                 name = device.name,
@@ -1029,7 +1047,11 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 lastUpdate = pos?.deviceTime ?: pos?.fixTime ?: device.lastUpdate ?: cached?.lastUpdate,
                 address = pos?.address ?: cached?.address,
                 accuracy = pos?.accuracy ?: 0.0,
-                info = infoText
+                info = infoText,
+                driverName = driver,
+                batteryLevel = batt,
+                odometerKm = odo,
+                ignition = ign
             )
         }.filter { it.latitude != 0.0 && it.longitude != 0.0 }
     }
@@ -1304,7 +1326,7 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
         deviceId: Long,
         from: String,
         to: String,
-        speedLimitKmh: Double = 80.0
+        speedLimitKmh: Double = _overspeedThresholdKmh.value.toDouble()
     ): com.example.data.model.SpeedingViolationReport = wrapSync("Speeding Violation Report") {
         val devName = devices.value.find { it.id == deviceId }?.name ?: "Device #$deviceId"
         val positions = repository.getRouteHistory(deviceId, from, to)

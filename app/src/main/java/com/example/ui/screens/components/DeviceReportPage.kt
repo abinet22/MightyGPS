@@ -26,11 +26,10 @@ import com.example.data.model.*
 import com.example.ui.theme.MC
 import com.example.ui.viewmodel.TraccarViewModel
 import com.example.util.GeofenceUtils
-import com.example.util.ReportDataLoader
-import com.example.util.ReportReconciliationManager
-import com.example.util.TelemetrySanitizerService
+import com.example.util.ReportStateHolder
 import com.example.util.UnitFormatter
 import com.example.util.generatePdfReport
+import com.example.util.rememberReportState
 import com.example.util.sharePdfReport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -54,141 +53,21 @@ fun DeviceReportPage(
 
     var reportTimeframe by remember { mutableStateOf("Today") }
     var activeSubTab by remember { mutableStateOf("Overview") }
-    var reportLoading by remember { mutableStateOf(false) }
-
-    var reportRoute by remember { mutableStateOf<List<Position>>(emptyList()) }
-    var reportTrips by remember { mutableStateOf<List<ReportTrip>>(emptyList()) }
-    var reportStops by remember { mutableStateOf<List<ReportStop>>(emptyList()) }
-    var reportSummaries by remember { mutableStateOf<List<ReportSummary>>(emptyList()) }
-    var reportEvents by remember { mutableStateOf<List<Event>>(emptyList()) }
-    var periodReport by remember { mutableStateOf<PeriodReport?>(null) }
+    val reportState = rememberReportState(viewModel, coroutineScope)
     var anomalyDismissed by remember(device.id, reportTimeframe) { mutableStateOf(false) }
 
-    // Fetch report data asynchronously using ReportDataLoader and ReportReconciliationManager
+    // Fetch report data asynchronously using ReportStateHolder
     LaunchedEffect(device.id, reportTimeframe) {
-        // Clear previous report data immediately to avoid stale data while new report loads
-        reportRoute = emptyList()
-        reportTrips = emptyList()
-        reportStops = emptyList()
-        reportSummaries = emptyList()
-        reportEvents = emptyList()
-        periodReport = null
-        reportLoading = true
-        try {
-            val (fromStr, toStr) = TelemetrySanitizerService.computeRange(reportTimeframe)
-
-            if (reportTimeframe in listOf("Today", "Weekly", "Monthly")) {
-                val periodType = when (reportTimeframe) {
-                    "Weekly" -> PeriodType.WEEKLY
-                    "Monthly" -> PeriodType.MONTHLY
-                    else -> PeriodType.DAILY
-                }
-                val reconciled = try {
-                    viewModel.queryReconciledPeriodReport(device.id, periodType)
-                } catch (_: Exception) {
-                    null
-                }
-                periodReport = reconciled
-            }
-
-            val bundle = ReportDataLoader.load(viewModel.repository, device.id, fromStr, toStr)
-            reportRoute = bundle.route
-            reportTrips = bundle.trips
-            reportStops = bundle.stops
-            reportSummaries = bundle.summaries
-            reportEvents = bundle.events
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            reportLoading = false
-        }
+        reportState.load(device.id, reportTimeframe)
     }
 
-    val totalDistance = remember(periodReport, reportSummaries, reportTrips, isMetric, reportLoading) {
-        if (reportLoading) "--"
-        else {
-            val distKm = periodReport?.totalDistanceKm
-                ?: reportSummaries.firstOrNull()?.distanceKm
-                ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
-                ?: 0.0
-            UnitFormatter.distance(distKm, isMetric)
-        }
-    }
-
-    val avgSpeed = remember(periodReport, reportSummaries, reportTrips, isMetric, reportLoading) {
-        if (reportLoading) "--"
-        else {
-            val distKm = periodReport?.totalDistanceKm
-                ?: reportSummaries.firstOrNull()?.distanceKm
-                ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
-                ?: 0.0
-            val spdKmh = periodReport?.weightedAverageSpeedKmh?.takeIf { it > 0.1 }
-                ?: reportSummaries.firstOrNull()?.averageSpeedKmh?.takeIf { it > 0.1 }
-                ?: reportTrips.mapNotNull { it.averageSpeedKmh.takeIf { s -> s > 0.1 } }.average().takeIf { !it.isNaN() && it > 0.1 }
-                ?: (if (distKm > 0.1) 36.5 else 0.0)
-            UnitFormatter.speed(spdKmh, isMetric)
-        }
-    }
-
-    val maxSpeed = remember(periodReport, reportSummaries, reportTrips, isMetric, reportLoading) {
-        if (reportLoading) "--"
-        else {
-            val distKm = periodReport?.totalDistanceKm
-                ?: reportSummaries.firstOrNull()?.distanceKm
-                ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
-                ?: 0.0
-            val spdKmh = periodReport?.maxSpeedKmh?.takeIf { it > 0.1 }
-                ?: reportSummaries.firstOrNull()?.maxSpeedKmh?.takeIf { it > 0.1 }
-                ?: reportTrips.mapNotNull { it.maxSpeedKmh.takeIf { s -> s > 0.1 } }.maxOrNull()
-                ?: (if (distKm > 0.1) 76.0 else 0.0)
-            UnitFormatter.speed(spdKmh, isMetric)
-        }
-    }
-
-    val spentFuelLiters = remember(periodReport, reportSummaries, reportTrips, reportLoading) {
-        if (reportLoading) 0.0
-        else {
-            val distKm = periodReport?.totalDistanceKm
-                ?: reportSummaries.firstOrNull()?.distanceKm
-                ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
-                ?: 0.0
-            periodReport?.totalFuelLiters?.takeIf { it > 0 }
-                ?: reportSummaries.firstOrNull()?.spentFuel
-                ?: (reportTrips.sumOf { it.spentFuel }.takeIf { it > 0 } ?: (distKm * 0.088))
-        }
-    }
-
-    val engineRuntime = remember(periodReport, reportSummaries, reportLoading) {
-        if (reportLoading) "--"
-        else {
-            if (periodReport != null && periodReport!!.totalEngineHoursMs > 0) {
-                val totalSeconds = periodReport!!.totalEngineHoursMs / 1000
-                val hours = totalSeconds / 3600
-                val minutes = (totalSeconds % 3600) / 60
-                "${hours}h ${minutes}m"
-            } else {
-                val distKm = periodReport?.totalDistanceKm ?: reportSummaries.firstOrNull()?.distanceKm ?: 0.0
-                reportSummaries.firstOrNull()?.engineHoursFormatted
-                    ?: "${(distKm / 40.0).toInt()}h ${(((distKm / 40.0) % 1) * 60).toInt()}m"
-            }
-        }
-    }
-
-    val speedingViolations = remember(reportEvents, reportLoading) {
-        if (reportLoading) "--"
-        else {
-            val alarms = reportEvents.count { it.type == "alarm" || it.attributes.containsKey("alarm") }
-            val speedEvents = reportEvents.count { it.type.contains("speed", ignoreCase = true) || it.attributes.containsKey("speed") }
-            maxOf(alarms, speedEvents).toString()
-        }
-    }
-
-    val geofenceBreaks = remember(reportEvents, reportLoading) {
-        if (reportLoading) "--"
-        else {
-            reportEvents.count { it.type.contains("geofence", ignoreCase = true) }.toString()
-        }
-    }
+    val totalDistance = if (reportState.isLoading && !reportState.isCacheHit) "--" else reportState.formattedTotalDistance(isMetric)
+    val avgSpeed = if (reportState.isLoading && !reportState.isCacheHit) "--" else reportState.formattedAverageSpeed(isMetric)
+    val maxSpeed = if (reportState.isLoading && !reportState.isCacheHit) "--" else reportState.formattedMaxSpeed(isMetric)
+    val spentFuelLiters = if (reportState.isLoading && !reportState.isCacheHit) 0.0 else reportState.spentFuelLiters
+    val engineRuntime = if (reportState.isLoading && !reportState.isCacheHit) "--" else reportState.engineRuntimeFormatted
+    val speedingViolations = if (reportState.isLoading && !reportState.isCacheHit) "--" else reportState.speedingViolationsCount.toString()
+    val geofenceBreaks = if (reportState.isLoading && !reportState.isCacheHit) "--" else reportState.geofenceBreaksCount.toString()
 
     Column(
         modifier = Modifier
@@ -302,7 +181,7 @@ fun DeviceReportPage(
                 Icon(Icons.Default.LocationOn, contentDescription = null, tint = MC.TextPrimary, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = if (appLanguage == "am") "ካርታ ላይ አሳይ" else if (appLanguage == "es") "Ver en Mapa" else "Live Map",
+                    text = if (appLanguage == "am") "ካርታ ላይ አሳይ" else if (appLanguage == "om") "Kaartaa Irra Agarsiisi" else "Live Map",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = MC.TextPrimary
@@ -318,7 +197,7 @@ fun DeviceReportPage(
                 Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MC.TextPrimary, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = if (appLanguage == "am") "ታሪክ አጫውት" else if (appLanguage == "es") "Ver Playback" else "Playback",
+                    text = if (appLanguage == "am") "ታሪክ አጫውት" else if (appLanguage == "om") "Seenaa Taphadhu" else "Playback",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = MC.TextPrimary
@@ -342,12 +221,12 @@ fun DeviceReportPage(
                     "Monthly" -> "ወርሃዊ"
                     else -> "ዛሬ"
                 }
-                val esLabel = when(opt) {
-                    "Weekly" -> "Semanal"
-                    "Monthly" -> "Mensual"
-                    else -> "Hoy"
+                val omLabel = when(opt) {
+                    "Weekly" -> "Torbee"
+                    "Monthly" -> "Ji'a"
+                    else -> "Har'a"
                 }
-                val displayLabel = if (appLanguage == "am") amLabel else if (appLanguage == "es") esLabel else opt
+                val displayLabel = if (appLanguage == "am") amLabel else if (appLanguage == "om") omLabel else opt
 
                 Box(
                     modifier = Modifier
@@ -358,13 +237,6 @@ fun DeviceReportPage(
                         )
                         .clickable {
                             if (reportTimeframe != opt) {
-                                // Immediately clear old data to avoid stale presentation
-                                reportRoute = emptyList()
-                                reportTrips = emptyList()
-                                reportStops = emptyList()
-                                reportSummaries = emptyList()
-                                reportEvents = emptyList()
-                                reportLoading = true
                                 reportTimeframe = opt
                             }
                         }
@@ -390,8 +262,8 @@ fun DeviceReportPage(
         ) {
             listOf(
                 "Overview" to "Overview",
-                "Trips" to "Trips (${reportTrips.size})",
-                "Stops" to "Stops (${reportStops.size})",
+                "Trips" to "Trips (${reportState.trips.size})",
+                "Stops" to "Stops (${reportState.stops.size})",
                 "Safety" to "Safety & Events"
             ).forEach { (tabKey, tabLabel) ->
                 val active = activeSubTab == tabKey
@@ -412,7 +284,7 @@ fun DeviceReportPage(
         }
 
         // SCROLLABLE METRICS & EVENT RECORDS
-        if (reportLoading) {
+        if (reportState.isLoading && !reportState.isCacheHit) {
             ReportSkeletonLoader(modifier = Modifier.weight(1f))
         } else {
             LazyColumn(
@@ -510,12 +382,12 @@ fun DeviceReportPage(
                                 appendLine(" • Peak Speed: $maxSpeed")
                                 appendLine(" • Speeding Violations: $speedingViolations")
                                 appendLine(" • Geofence Breaks: $geofenceBreaks")
-                                appendLine(" • Completed Trips: ${reportTrips.size}")
-                                appendLine(" • Logged Stops: ${reportStops.size}")
+                                appendLine(" • Completed Trips: ${reportState.trips.size}")
+                                appendLine(" • Logged Stops: ${reportState.stops.size}")
                                 appendLine("-----------------------------------------")
-                                if (reportTrips.isNotEmpty()) {
+                                if (reportState.trips.isNotEmpty()) {
                                     appendLine("TRIP BREAKDOWNS:")
-                                    reportTrips.forEachIndexed { i, trip ->
+                                    reportState.trips.forEachIndexed { i, trip ->
                                         appendLine(" Trip #${i + 1} (${trip.timeRangeFormatted}): ${trip.startAddress ?: "Origin"} -> ${trip.endAddress ?: "Destination"}")
                                         appendLine("   Duration: ${trip.durationFormatted} | Distance: ${String.format(Locale.US, "%.1f km", trip.distanceKm)} | Driver: ${trip.driverName ?: "N/A"}")
                                     }
@@ -545,7 +417,7 @@ fun DeviceReportPage(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (appLanguage == "am") "ጽሑፍ አጋራ" else if (appLanguage == "es") "Compartir Texto" else "Share Text",
+                            text = if (appLanguage == "am") "ጽሑፍ አጋራ" else if (appLanguage == "om") "Barreeffama Qoodi" else "Share Text",
                             color = MC.TextPrimary,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold
@@ -567,9 +439,9 @@ fun DeviceReportPage(
                                         engineHours = engineRuntime,
                                         speedingViolations = speedingViolations,
                                         geofenceBreaks = geofenceBreaks,
-                                        trips = reportTrips,
-                                        stops = reportStops,
-                                        events = reportEvents
+                                        trips = reportState.trips,
+                                        stops = reportState.stops,
+                                        events = reportState.events
                                     )
                                 }
                                 if (pdfFile != null) {
@@ -590,7 +462,7 @@ fun DeviceReportPage(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (appLanguage == "am") "PDF አውርድ" else if (appLanguage == "es") "Exportar PDF" else "Export PDF",
+                            text = if (appLanguage == "am") "PDF አውርድ" else if (appLanguage == "om") "PDF Buusi" else "Export PDF",
                             color = MC.TextPrimary,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold
@@ -600,10 +472,11 @@ fun DeviceReportPage(
             }
 
             // Daily Trend Bar Chart for Weekly/Monthly
-            if (periodReport != null && periodReport!!.dailyBreakdown.isNotEmpty()) {
+            val periodRep = reportState.periodReport
+            if (periodRep != null && periodRep.dailyBreakdown.isNotEmpty()) {
                 item {
                     DailyTrendBarChart(
-                        dailyBreakdown = periodReport!!.dailyBreakdown,
+                        dailyBreakdown = periodRep.dailyBreakdown,
                         isMetric = isMetric
                     )
                 }
@@ -611,7 +484,7 @@ fun DeviceReportPage(
 
             when (activeSubTab) {
                 "Trips" -> {
-                    val displayTrips = reportTrips.take(10)
+                    val displayTrips = reportState.trips.take(10)
                     item {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
@@ -619,12 +492,12 @@ fun DeviceReportPage(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Trips Log (${reportTrips.size} Total)",
+                                text = "Trips Log (${reportState.trips.size} Total)",
                                 color = MC.TextPrimary,
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
-                            if (reportTrips.size > 10) {
+                            if (reportState.trips.size > 10) {
                                 Text(
                                     text = "Showing 10 recent",
                                     color = MC.AccentPrimary,
@@ -633,7 +506,7 @@ fun DeviceReportPage(
                             }
                         }
                     }
-                    if (reportTrips.isEmpty()) {
+                    if (reportState.trips.isEmpty()) {
                         item {
                             EmptyStateView(
                                 icon = Icons.Default.DirectionsCar,
@@ -644,7 +517,7 @@ fun DeviceReportPage(
                         }
                     } else {
                         items(displayTrips) { trip ->
-                            val idx = reportTrips.indexOf(trip)
+                            val idx = reportState.trips.indexOf(trip)
                             Card(
                                 colors = CardDefaults.cardColors(containerColor = MC.Surface1),
                                 shape = RoundedCornerShape(8.dp),
@@ -702,7 +575,7 @@ fun DeviceReportPage(
                             }
                         }
 
-                        if (reportTrips.size > 10) {
+                        if (reportState.trips.size > 10) {
                             item {
                                 Card(
                                     colors = CardDefaults.cardColors(containerColor = MC.Surface2),
@@ -710,7 +583,7 @@ fun DeviceReportPage(
                                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                                 ) {
                                     Text(
-                                        text = "Showing 10 of ${reportTrips.size} trips. Full trip logs available in Export PDF.",
+                                        text = "Showing 10 of ${reportState.trips.size} trips. Full trip logs available in Export PDF.",
                                         color = MC.TextSecondary,
                                         style = MaterialTheme.typography.labelSmall,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
@@ -721,7 +594,7 @@ fun DeviceReportPage(
                     }
                 }
                 "Stops" -> {
-                    val displayStops = reportStops.take(10)
+                    val displayStops = reportState.stops.take(10)
                     item {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
@@ -729,12 +602,12 @@ fun DeviceReportPage(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Stops Log (${reportStops.size} Total)",
+                                text = "Stops Log (${reportState.stops.size} Total)",
                                 color = MC.TextPrimary,
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
-                            if (reportStops.size > 10) {
+                            if (reportState.stops.size > 10) {
                                 Text(
                                     text = "Showing 10 recent",
                                     color = MC.AccentPrimary,
@@ -743,7 +616,7 @@ fun DeviceReportPage(
                             }
                         }
                     }
-                    if (reportStops.isEmpty()) {
+                    if (reportState.stops.isEmpty()) {
                         item {
                             EmptyStateView(
                                 icon = Icons.Default.Place,
@@ -754,7 +627,7 @@ fun DeviceReportPage(
                         }
                     } else {
                         items(displayStops) { stop ->
-                            val idx = reportStops.indexOf(stop)
+                            val idx = reportState.stops.indexOf(stop)
                             Card(
                                 colors = CardDefaults.cardColors(containerColor = MC.Surface1),
                                 shape = RoundedCornerShape(8.dp),
@@ -809,7 +682,7 @@ fun DeviceReportPage(
                             }
                         }
 
-                        if (reportStops.size > 10) {
+                        if (reportState.stops.size > 10) {
                             item {
                                 Card(
                                     colors = CardDefaults.cardColors(containerColor = MC.Surface2),
@@ -817,7 +690,7 @@ fun DeviceReportPage(
                                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                                 ) {
                                     Text(
-                                        text = "Showing 10 of ${reportStops.size} stops. Full stops log available in Export PDF.",
+                                        text = "Showing 10 of ${reportState.stops.size} stops. Full stops log available in Export PDF.",
                                         color = MC.TextSecondary,
                                         style = MaterialTheme.typography.labelSmall,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
@@ -828,7 +701,7 @@ fun DeviceReportPage(
                     }
                 }
                 "Safety" -> {
-                    val displayEvents = reportEvents.take(10)
+                    val displayEvents = reportState.events.take(10)
                     item {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
@@ -836,12 +709,12 @@ fun DeviceReportPage(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Safety Alarms (${reportEvents.size} Total)",
+                                text = "Safety Alarms (${reportState.events.size} Total)",
                                 color = MC.TextPrimary,
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
-                            if (reportEvents.size > 10) {
+                            if (reportState.events.size > 10) {
                                 Text(
                                     text = "Showing 10 recent",
                                     color = MC.AccentPrimary,
@@ -850,7 +723,7 @@ fun DeviceReportPage(
                             }
                         }
                     }
-                    if (reportEvents.isEmpty()) {
+                    if (reportState.events.isEmpty()) {
                         item {
                             EmptyStateView(
                                 icon = Icons.Default.CheckCircle,
@@ -881,7 +754,7 @@ fun DeviceReportPage(
                             }
                         }
 
-                        if (reportEvents.size > 10) {
+                        if (reportState.events.size > 10) {
                             item {
                                 Card(
                                     colors = CardDefaults.cardColors(containerColor = MC.Surface2),
@@ -889,7 +762,7 @@ fun DeviceReportPage(
                                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                                 ) {
                                     Text(
-                                        text = "Showing 10 of ${reportEvents.size} alerts. Full alerts history available in Export PDF.",
+                                        text = "Showing 10 of ${reportState.events.size} alerts. Full alerts history available in Export PDF.",
                                         color = MC.TextSecondary,
                                         style = MaterialTheme.typography.labelSmall,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
@@ -902,7 +775,7 @@ fun DeviceReportPage(
                 else -> {
                     item {
                         Text(
-                            text = if (appLanguage == "am") "አጠቃላይ የቴሌማቲክስ ማጠቃለያ" else if (appLanguage == "es") "Resumen Ejecutivo" else "Executive Telematics Summary",
+                            text = if (appLanguage == "am") "አጠቃላይ የቴሌማቲክስ ማጠቃለያ" else if (appLanguage == "om") "Cuunfaa Teessuma Telematics" else "Executive Telematics Summary",
                             color = MC.TextPrimary,
                             style = MaterialTheme.typography.titleSmall,
                             modifier = Modifier.padding(top = 6.dp)
@@ -932,7 +805,7 @@ fun DeviceReportPage(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text("Logged Trips", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
-                                    Text("${reportTrips.size} completed", color = MC.AccentPrimary, style = MaterialTheme.typography.titleSmall)
+                                    Text("${reportState.trips.size} completed", color = MC.AccentPrimary, style = MaterialTheme.typography.titleSmall)
                                 }
                                 HorizontalDivider(color = MC.Surface3)
 
@@ -942,7 +815,7 @@ fun DeviceReportPage(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text("Stops & Parked Periods", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
-                                    Text("${reportStops.size} logged", color = MC.StatusOnline, style = MaterialTheme.typography.titleSmall)
+                                    Text("${reportState.stops.size} logged", color = MC.StatusOnline, style = MaterialTheme.typography.titleSmall)
                                 }
                                 HorizontalDivider(color = MC.Surface3)
 
@@ -953,8 +826,8 @@ fun DeviceReportPage(
                                 ) {
                                     Text("Safety Alerts & Geofences", color = MC.TextSecondary, style = MaterialTheme.typography.bodySmall)
                                     Text(
-                                        "${reportEvents.size} alerts",
-                                        color = if (reportEvents.isNotEmpty()) MC.StatusOffline else MC.StatusOnline,
+                                        "${reportState.events.size} alerts",
+                                        color = if (reportState.events.isNotEmpty()) MC.StatusOffline else MC.StatusOnline,
                                         style = MaterialTheme.typography.titleSmall
                                     )
                                 }
@@ -962,16 +835,17 @@ fun DeviceReportPage(
                         }
                     }
 
-                    if (periodReport != null && periodReport!!.dailyBreakdown.isNotEmpty()) {
+                    val periodRepOverview = reportState.periodReport
+                    if (periodRepOverview != null && periodRepOverview.dailyBreakdown.isNotEmpty()) {
                         item {
                             DailyBreakdownTable(
-                                dailyBreakdown = periodReport!!.dailyBreakdown,
+                                dailyBreakdown = periodRepOverview.dailyBreakdown,
                                 isMetric = isMetric
                             )
                         }
                     }
 
-                    if (reportTrips.isNotEmpty()) {
+                    if (reportState.trips.isNotEmpty()) {
                         item {
                             Text(
                                 text = if (appLanguage == "am") "የቅርብ ጊዜ ጉዞ ማጠቃለያ" else "Recent Trip Highlight",
@@ -980,7 +854,7 @@ fun DeviceReportPage(
                                 modifier = Modifier.padding(top = 6.dp)
                             )
                         }
-                        val latestTrip = reportTrips.first()
+                        val latestTrip = reportState.trips.first()
                         item {
                             Card(
                                 colors = CardDefaults.cardColors(containerColor = MC.Surface2),

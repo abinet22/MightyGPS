@@ -14,8 +14,8 @@ android {
     applicationId = "com.aistudio.saasgpstracker.tzxuvy"
     minSdk = 24
     targetSdk = 36
-    versionCode = 42
-    versionName = "42.0"
+    versionCode = 43
+    versionName = "43.0"
 
     val mapsKey = (project.findProperty("GOOGLE_MAPS_API_KEY") as? String)
         ?: System.getenv("GOOGLE_MAPS_API_KEY")
@@ -53,7 +53,8 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }

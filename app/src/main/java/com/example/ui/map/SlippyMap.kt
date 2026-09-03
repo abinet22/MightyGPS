@@ -1,9 +1,8 @@
 package com.example.ui.map
 
 import android.net.Uri
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,6 +34,7 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
 import com.google.maps.android.compose.*
+import java.util.Locale
 import kotlin.math.*
 
 /**
@@ -283,6 +283,7 @@ fun SlippyMap(
     customIconUri: String? = null,
     geofences: List<com.example.ui.viewmodel.TraccarViewModel.CustomGeofence> = emptyList(),
     isGeofenceLayerVisible: Boolean = true,
+    highlightedGeofenceId: String? = null,
     onGeofenceClick: (com.example.ui.viewmodel.TraccarViewModel.CustomGeofence) -> Unit = {},
     drawMode: String = "none",
     drawnPoints: List<Pair<Double, Double>> = emptyList(),
@@ -451,27 +452,49 @@ fun SlippyMap(
         ) {
             // 1. Geofences Layer (Polygons & Circles)
             if (isGeofenceLayerVisible) {
+                val infinitePulse = rememberInfiniteTransition(label = "pulseTransition")
+                val pulseStrokeWidth by infinitePulse.animateFloat(
+                    initialValue = 5f,
+                    targetValue = 15f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(600, easing = FastOutSlowInEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "strokePulse"
+                )
+                val pulseAlpha by infinitePulse.animateFloat(
+                    initialValue = 0.25f,
+                    targetValue = 0.65f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(600, easing = FastOutSlowInEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "alphaPulse"
+                )
+
                 geofences.forEach { gf ->
-                    val baseColor = parseHexColor(gf.colorHex, MC.AccentPrimary)
-                    val fillColor = baseColor.copy(alpha = 0.25f)
-                    val strokeColor = baseColor.copy(alpha = 0.95f)
+                    val isHighlighted = (gf.id == highlightedGeofenceId)
+                    val baseColor = if (isHighlighted) MC.StatusOnline else parseHexColor(gf.colorHex, MC.AccentPrimary)
+                    val fillColor = if (isHighlighted) MC.StatusOnline.copy(alpha = pulseAlpha) else baseColor.copy(alpha = 0.25f)
+                    val strokeColor = if (isHighlighted) MC.StatusOnline else baseColor.copy(alpha = 0.95f)
+                    val currentStrokeWidth = if (isHighlighted) pulseStrokeWidth else 4f
 
                     if (gf.type == "polygon" && gf.points.size >= 3) {
                         Polygon(
                             points = gf.points.map { LatLng(it.first, it.second) },
                             fillColor = fillColor,
                             strokeColor = strokeColor,
-                            strokeWidth = 5f,
+                            strokeWidth = currentStrokeWidth,
                             clickable = true,
                             onClick = { onGeofenceClick(gf) },
-                            zIndex = 10f
+                            zIndex = if (isHighlighted) 30f else 10f
                         )
 
                         // Centroid label badge for polygon
                         if (gf.latitude != 0.0 && gf.longitude != 0.0) {
                             MarkerComposable(
                                 state = rememberMarkerState(key = "gf_poly_label_${gf.id}", position = LatLng(gf.latitude, gf.longitude)),
-                                zIndex = 25f,
+                                zIndex = if (isHighlighted) 35f else 25f,
                                 onClick = {
                                     onGeofenceClick(gf)
                                     true
@@ -511,16 +534,16 @@ fun SlippyMap(
                                 radius = gf.radiusMeters,
                                 fillColor = fillColor,
                                 strokeColor = strokeColor,
-                                strokeWidth = 4f,
+                                strokeWidth = currentStrokeWidth,
                                 clickable = true,
                                 onClick = { onGeofenceClick(gf) },
-                                zIndex = 10f
+                                zIndex = if (isHighlighted) 30f else 10f
                             )
 
                             // Centroid label badge for circle
                             MarkerComposable(
                                 state = rememberMarkerState(key = "gf_circ_label_${gf.id}", position = LatLng(gf.latitude, gf.longitude)),
-                                zIndex = 25f,
+                                zIndex = if (isHighlighted) 35f else 25f,
                                 onClick = {
                                     onGeofenceClick(gf)
                                     true
@@ -606,6 +629,104 @@ fun SlippyMap(
                             .background(MC.AccentPrimary, CircleShape)
                             .border(2.dp, MC.TextPrimary, CircleShape)
                     )
+                }
+
+                // Draggable Radius Handle on Circle Perimeter (East heading 90 deg)
+                val handlePair = remember(drawnCircleCenter, drawnCircleRadiusMeters) {
+                    com.example.util.GeofenceUtils.computeOffset(
+                        drawnCircleCenter.first,
+                        drawnCircleCenter.second,
+                        drawnCircleRadiusMeters,
+                        90.0
+                    )
+                }
+                val handleMarkerState = rememberMarkerState(
+                    key = "draw_circle_handle_edge",
+                    position = LatLng(handlePair.first, handlePair.second)
+                )
+
+                // Sync marker position when radius or center changes outside dragging
+                LaunchedEffect(drawnCircleCenter, drawnCircleRadiusMeters) {
+                    if (handleMarkerState.dragState != DragState.DRAG) {
+                        handleMarkerState.position = LatLng(handlePair.first, handlePair.second)
+                    }
+                }
+
+                // Handle drag events to update radius in real time
+                LaunchedEffect(handleMarkerState.position, handleMarkerState.dragState) {
+                    if (handleMarkerState.dragState == DragState.DRAG || handleMarkerState.dragState == DragState.END) {
+                        val computedDist = com.example.util.GeofenceUtils.calculateDistanceMeters(
+                            drawnCircleCenter.first,
+                            drawnCircleCenter.second,
+                            handleMarkerState.position.latitude,
+                            handleMarkerState.position.longitude
+                        )
+                        val clamped = computedDist.coerceIn(50.0, 50000.0)
+                        onDrawCircleChanged(drawnCircleCenter, clamped)
+                    }
+                }
+
+                MarkerComposable(
+                    state = handleMarkerState,
+                    draggable = true,
+                    zIndex = 65f
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MC.AccentPrimary,
+                        border = BorderStroke(2.dp, MC.TextPrimary),
+                        shadowElevation = 8.dp,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.OpenWith,
+                                contentDescription = "Drag to resize geofence radius",
+                                tint = MC.TextPrimary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Live Radius Readout Badge at midpoint
+                val badgePair = remember(drawnCircleCenter, drawnCircleRadiusMeters) {
+                    com.example.util.GeofenceUtils.computeOffset(
+                        drawnCircleCenter.first,
+                        drawnCircleCenter.second,
+                        drawnCircleRadiusMeters * 0.5,
+                        90.0
+                    )
+                }
+                MarkerComposable(
+                    state = rememberMarkerState(key = "draw_circle_badge", position = LatLng(badgePair.first, badgePair.second)),
+                    zIndex = 55f
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MC.Surface1.copy(alpha = 0.92f),
+                        border = BorderStroke(1.dp, MC.AccentPrimary.copy(alpha = 0.8f)),
+                        shadowElevation = 4.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Straighten,
+                                contentDescription = null,
+                                tint = MC.AccentPrimary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                text = if (drawnCircleRadiusMeters >= 1000) String.format(Locale.US, "%.1f km", drawnCircleRadiusMeters / 1000.0) else "${drawnCircleRadiusMeters.roundToInt()} m",
+                                color = MC.AccentPrimary,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 }
             }
 
@@ -793,6 +914,7 @@ fun SlippyMap(
                             markerState.position = LatLng(m.latitude, m.longitude)
                         }
                         val isSelected = m.id == selectedMarkerId
+                        val showDetailedCallout = (markerTriggerMode.equals("always", ignoreCase = true) || isSelected)
                         val statusColor = when (m.status.lowercase()) {
                             "online", "moving" -> parseHexColor(colorMoving, MC.StatusOnline)
                             "idle", "parked" -> parseHexColor(colorIdle, MC.StatusIdle)
@@ -817,9 +939,13 @@ fun SlippyMap(
                         }
                         val labelText = when (markerLabelType) {
                             "name" -> m.name
-                            "coordinates" -> String.format("%.4f, %.4f", m.latitude, m.longitude)
-                            "plate" -> if (m.info.contains("Plate: ")) m.info.substringAfter("Plate: ").substringBefore(" •") else "ET 3-" + (10000 + (abs(m.id) % 90000)) + " AA"
+                            "coordinates" -> String.format(Locale.US, "%.4f, %.4f", m.latitude, m.longitude)
+                            "plate" -> if (m.info.contains("Plate: ")) m.info.substringAfter("Plate: ").substringBefore(" •") else m.name
                             else -> ""
+                        }
+
+                        val activeFieldsList = remember(infoCardFields) {
+                            infoCardFields.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
                         }
 
                         MarkerComposable(
@@ -830,6 +956,9 @@ fun SlippyMap(
                                 m.status,
                                 m.category ?: "",
                                 isSelected,
+                                showDetailedCallout,
+                                infoCardFields,
+                                markerTriggerMode,
                                 labelText,
                                 markerIconStyle,
                                 markerLabelType,
@@ -844,13 +973,66 @@ fun SlippyMap(
                                 onUserInteraction()
                                 true
                             },
-                            zIndex = if (isSelected) 100f else 10f
+                            zIndex = if (isSelected) 100f else if (showDetailedCallout) 25f else 10f
                         ) {
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 modifier = Modifier.padding(4.dp)
                             ) {
-                                if (labelText.isNotEmpty()) {
+                                if (showDetailedCallout) {
+                                    Surface(
+                                        color = MC.Surface1.copy(alpha = 0.95f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.5.dp, if (isSelected) MC.AccentPrimary else statusColor),
+                                        shadowElevation = 6.dp,
+                                        modifier = Modifier.padding(bottom = 3.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Text(
+                                                text = if (activeFieldsList.contains("name")) labelText.ifEmpty { m.name } else m.name,
+                                                color = Color.White,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1
+                                            )
+                                            
+                                            // Telemetry chips summary based on configured infoCardFields
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                if (activeFieldsList.contains("speed")) {
+                                                    Text(
+                                                        text = String.format(Locale.US, "%.0f km/h", m.speedKmh),
+                                                        color = MC.StatusOnline,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                                if (activeFieldsList.contains("ignition")) {
+                                                    Text(
+                                                        text = if (m.ignition == true) "IGN ON" else "OFF",
+                                                        color = if (m.ignition == true) MC.StatusOnline else MC.StatusOffline,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                }
+                                                if (activeFieldsList.contains("battery")) {
+                                                    Text(
+                                                        text = "${m.batteryLevel ?: 94}%",
+                                                        color = MC.StatusIdle,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Medium
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if (labelText.isNotEmpty()) {
                                     Surface(
                                         color = MC.Surface1.copy(alpha = 0.95f),
                                         shape = RoundedCornerShape(6.dp),
