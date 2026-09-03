@@ -18,15 +18,17 @@ data class DailySummary(
 ) {
     val totalDistanceKm: Double get() = totalDistanceMeters / 1000.0
     val totalDistanceMiles: Double get() = totalDistanceMeters / 1609.344
-    val maxSpeedKmh: Double get() = maxSpeedKnots * 1.852
-    val maxSpeedMph: Double get() = maxSpeedKnots * 1.15078
+    val maxSpeedKmh: Double get() = (maxSpeedKnots * 1.852).coerceIn(0.0, 180.0)
+    val maxSpeedMph: Double get() = (maxSpeedKnots * 1.15078).coerceIn(0.0, 112.0)
     val calculatedAvgSpeedKmh: Double
-        get() = if (movingDurationMs > 0 && totalDistanceMeters > 0) {
-            (totalDistanceMeters / 1000.0) / (movingDurationMs / 3600000.0)
+        get() = if (movingDurationMs > 60000L && totalDistanceMeters > 0) {
+            val spd = (totalDistanceMeters / 1000.0) / (movingDurationMs / 3600000.0)
+            if (spd in 0.1..160.0) spd else if (averageSpeedKnots > 0) (averageSpeedKnots * 1.852).coerceIn(0.0, 160.0) else 0.0
         } else if (averageSpeedKnots > 0) {
-            averageSpeedKnots * 1.852
-        } else if (totalDistanceMeters > 0 && engineHoursMs > 0) {
-            (totalDistanceMeters / 1000.0) / (engineHoursMs / 3600000.0)
+            (averageSpeedKnots * 1.852).coerceIn(0.0, 160.0)
+        } else if (totalDistanceMeters > 0 && engineHoursMs > 60000L) {
+            val spd = (totalDistanceMeters / 1000.0) / (engineHoursMs / 3600000.0)
+            spd.coerceIn(0.0, 160.0)
         } else 0.0
     val calculatedAvgSpeedKnots: Double
         get() = calculatedAvgSpeedKmh / 1.852
@@ -59,10 +61,10 @@ data class PeriodReport(
 ) {
     val totalDistanceKm: Double get() = totalDistanceMeters / 1000.0
     val totalDistanceMiles: Double get() = totalDistanceMeters / 1609.344
-    val maxSpeedKmh: Double get() = maxSpeedKnots * 1.852
-    val maxSpeedMph: Double get() = maxSpeedKnots * 1.15078
-    val weightedAverageSpeedKmh: Double get() = weightedAverageSpeedKnots * 1.852
-    val weightedAverageSpeedMph: Double get() = weightedAverageSpeedKnots * 1.15078
+    val maxSpeedKmh: Double get() = (maxSpeedKnots * 1.852).coerceIn(0.0, 180.0)
+    val maxSpeedMph: Double get() = (maxSpeedKnots * 1.15078).coerceIn(0.0, 112.0)
+    val weightedAverageSpeedKmh: Double get() = (weightedAverageSpeedKnots * 1.852).coerceIn(0.0, 160.0)
+    val weightedAverageSpeedMph: Double get() = (weightedAverageSpeedKnots * 1.15078).coerceIn(0.0, 100.0)
 }
 
 @JsonClass(generateAdapter = true)

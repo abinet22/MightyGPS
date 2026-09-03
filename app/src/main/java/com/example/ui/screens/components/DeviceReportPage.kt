@@ -104,71 +104,61 @@ fun DeviceReportPage(
         }
     }
 
-    val totalDistance = remember(periodReport, reportSummaries, reportTrips, reportRoute, isMetric, reportLoading) {
+    val totalDistance = remember(periodReport, reportSummaries, reportTrips, isMetric, reportLoading) {
         if (reportLoading) "--"
         else {
             val distKm = periodReport?.totalDistanceKm
                 ?: reportSummaries.firstOrNull()?.distanceKm
                 ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
-                ?: (reportRoute.size * 0.75)
+                ?: 0.0
             UnitFormatter.distance(distKm, isMetric)
         }
     }
 
-    val avgSpeed = remember(periodReport, reportSummaries, reportTrips, reportRoute, isMetric, reportLoading) {
+    val avgSpeed = remember(periodReport, reportSummaries, reportTrips, isMetric, reportLoading) {
         if (reportLoading) "--"
         else {
             val distKm = periodReport?.totalDistanceKm
                 ?: reportSummaries.firstOrNull()?.distanceKm
                 ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
-                ?: (reportRoute.size * 0.75)
+                ?: 0.0
             val spdKmh = periodReport?.weightedAverageSpeedKmh?.takeIf { it > 0.1 }
                 ?: reportSummaries.firstOrNull()?.averageSpeedKmh?.takeIf { it > 0.1 }
                 ?: reportTrips.mapNotNull { it.averageSpeedKmh.takeIf { s -> s > 0.1 } }.average().takeIf { !it.isNaN() && it > 0.1 }
-                ?: run {
-                    val sanitized = TelemetrySanitizerService.sanitizeRoute(reportRoute)
-                    val distMeters = sanitized.zipWithNext { a, b ->
-                        GeofenceUtils.calculateDistanceMeters(a.latitude, a.longitude, b.latitude, b.longitude)
-                    }.sum()
-                    val movingMs = sanitized.zipWithNext { a, b ->
-                        if (a.speedKmh > 0.8 || b.speedKmh > 0.8) {
-                            val t1 = TelemetrySanitizerService.parseUtcIso8601(a.fixTime ?: a.deviceTime)?.time ?: 0L
-                            val t2 = TelemetrySanitizerService.parseUtcIso8601(b.fixTime ?: b.deviceTime)?.time ?: 0L
-                            val diff = t2 - t1
-                            if (diff in 1..3600000) diff else 10000L
-                        } else 0L
-                    }.sum().takeIf { it > 0 } ?: (sanitized.count { it.speedKmh > 0.8 } * 10000L)
-                    (ReportReconciliationManager.calculateWeightedAverageSpeedKnots(distMeters, movingMs) * 1.852).takeIf { it > 0.1 } ?: (if (distKm > 0.1) 36.5 else 0.0)
-                }
+                ?: (if (distKm > 0.1) 36.5 else 0.0)
             UnitFormatter.speed(spdKmh, isMetric)
         }
     }
 
-    val maxSpeed = remember(periodReport, reportSummaries, reportTrips, reportRoute, isMetric, reportLoading) {
+    val maxSpeed = remember(periodReport, reportSummaries, reportTrips, isMetric, reportLoading) {
         if (reportLoading) "--"
         else {
             val distKm = periodReport?.totalDistanceKm
                 ?: reportSummaries.firstOrNull()?.distanceKm
                 ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
-                ?: (reportRoute.size * 0.75)
+                ?: 0.0
             val spdKmh = periodReport?.maxSpeedKmh?.takeIf { it > 0.1 }
                 ?: reportSummaries.firstOrNull()?.maxSpeedKmh?.takeIf { it > 0.1 }
                 ?: reportTrips.mapNotNull { it.maxSpeedKmh.takeIf { s -> s > 0.1 } }.maxOrNull()
-                ?: (reportRoute.maxOfOrNull { it.speedKmh }?.takeIf { it > 0.1 } ?: (if (distKm > 0.1) 76.0 else 0.0))
+                ?: (if (distKm > 0.1) 76.0 else 0.0)
             UnitFormatter.speed(spdKmh, isMetric)
         }
     }
 
-    val spentFuelLiters = remember(periodReport, reportSummaries, reportTrips, reportRoute, reportLoading) {
+    val spentFuelLiters = remember(periodReport, reportSummaries, reportTrips, reportLoading) {
         if (reportLoading) 0.0
         else {
+            val distKm = periodReport?.totalDistanceKm
+                ?: reportSummaries.firstOrNull()?.distanceKm
+                ?: reportTrips.sumOf { it.distanceKm }.takeIf { it > 0 }
+                ?: 0.0
             periodReport?.totalFuelLiters?.takeIf { it > 0 }
                 ?: reportSummaries.firstOrNull()?.spentFuel
-                ?: (reportTrips.sumOf { it.spentFuel }.takeIf { it > 0 } ?: ((reportRoute.size * 0.75) * 0.088))
+                ?: (reportTrips.sumOf { it.spentFuel }.takeIf { it > 0 } ?: (distKm * 0.088))
         }
     }
 
-    val engineRuntime = remember(periodReport, reportSummaries, reportRoute, reportLoading) {
+    val engineRuntime = remember(periodReport, reportSummaries, reportLoading) {
         if (reportLoading) "--"
         else {
             if (periodReport != null && periodReport!!.totalEngineHoursMs > 0) {
@@ -177,18 +167,19 @@ fun DeviceReportPage(
                 val minutes = (totalSeconds % 3600) / 60
                 "${hours}h ${minutes}m"
             } else {
+                val distKm = periodReport?.totalDistanceKm ?: reportSummaries.firstOrNull()?.distanceKm ?: 0.0
                 reportSummaries.firstOrNull()?.engineHoursFormatted
-                    ?: "${(reportRoute.size / 45)}h ${((reportRoute.size % 45) * 1.3).toInt()}m"
+                    ?: "${(distKm / 40.0).toInt()}h ${(((distKm / 40.0) % 1) * 60).toInt()}m"
             }
         }
     }
 
-    val speedingViolations = remember(reportEvents, reportRoute, reportLoading) {
+    val speedingViolations = remember(reportEvents, reportLoading) {
         if (reportLoading) "--"
         else {
             val alarms = reportEvents.count { it.type == "alarm" || it.attributes.containsKey("alarm") }
-            val speedCount = reportRoute.count { it.speedKmh > 80.0 }
-            (alarms + (speedCount / 12)).toString()
+            val speedEvents = reportEvents.count { it.type.contains("speed", ignoreCase = true) || it.attributes.containsKey("speed") }
+            maxOf(alarms, speedEvents).toString()
         }
     }
 

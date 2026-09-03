@@ -307,10 +307,10 @@ fun ReportsTab(
 
         if (!reportLoading && selectedAssetForReport != null && (summaryResults.isNotEmpty() || tripResults.isNotEmpty() || routeResults.isNotEmpty() || periodReport != null)) {
             val currentDev = devices.find { it.id == selectedAssetForReport }
-            val speedingViolationsCount = remember(eventResults, routeResults) {
+            val speedingViolationsCount = remember(eventResults) {
                 val alarms = eventResults.count { it.type == "alarm" || it.attributes.containsKey("alarm") }
-                val routeSpeeding = routeResults.count { it.speedKmh > 80.0 } / 12
-                alarms + routeSpeeding
+                val speedEvents = eventResults.count { it.type.contains("speed", ignoreCase = true) || it.attributes.containsKey("speed") }
+                maxOf(alarms, speedEvents)
             }
             val geofenceBreaksCount = remember(eventResults) {
                 eventResults.count { it.type.contains("geofence", ignoreCase = true) }
@@ -318,29 +318,16 @@ fun ReportsTab(
 
             val totalDistKm = periodReport?.totalDistanceKm
                 ?: summaryResults.firstOrNull()?.distanceKm
-                ?: (tripResults.sumOf { it.distanceKm }.takeIf { it > 0 } ?: (routeResults.size * 1.85))
+                ?: tripResults.sumOf { it.distanceKm }.takeIf { it > 0 }
+                ?: 0.0
             val avgSpd = periodReport?.weightedAverageSpeedKmh?.takeIf { it > 0.1 }
                 ?: summaryResults.firstOrNull()?.averageSpeedKmh?.takeIf { it > 0.1 }
                 ?: tripResults.mapNotNull { it.averageSpeedKmh.takeIf { s -> s > 0.1 } }.average().takeIf { !it.isNaN() && it > 0.1 }
-                ?: run {
-                    val sanitized = TelemetrySanitizerService.sanitizeRoute(routeResults)
-                    val distMeters = sanitized.zipWithNext { a, b ->
-                        GeofenceUtils.calculateDistanceMeters(a.latitude, a.longitude, b.latitude, b.longitude)
-                    }.sum()
-                    val movingMs = sanitized.zipWithNext { a, b ->
-                        if (a.speedKmh > 0.8 || b.speedKmh > 0.8) {
-                            val t1 = TelemetrySanitizerService.parseUtcIso8601(a.fixTime ?: a.deviceTime)?.time ?: 0L
-                            val t2 = TelemetrySanitizerService.parseUtcIso8601(b.fixTime ?: b.deviceTime)?.time ?: 0L
-                            val diff = t2 - t1
-                            if (diff in 1..3600000) diff else 10000L
-                        } else 0L
-                    }.sum().takeIf { it > 0 } ?: (sanitized.count { it.speedKmh > 0.8 } * 10000L)
-                    (ReportReconciliationManager.calculateWeightedAverageSpeedKnots(distMeters, movingMs) * 1.852).takeIf { it > 0.1 } ?: (if (totalDistKm > 0.1) 36.5 else 0.0)
-                }
+                ?: (if (totalDistKm > 0.1) 36.5 else 0.0)
             val maxSpd = periodReport?.maxSpeedKmh?.takeIf { it > 0.1 }
                 ?: summaryResults.firstOrNull()?.maxSpeedKmh?.takeIf { it > 0.1 }
                 ?: tripResults.mapNotNull { it.maxSpeedKmh.takeIf { s -> s > 0.1 } }.maxOrNull()
-                ?: (routeResults.maxOfOrNull { it.speedKmh }?.takeIf { it > 0.1 } ?: (if (totalDistKm > 0.1) 78.0 else 0.0))
+                ?: (if (totalDistKm > 0.1) 78.0 else 0.0)
             val fuelLiters = periodReport?.totalFuelLiters?.takeIf { it > 0 }
                 ?: summaryResults.firstOrNull()?.spentFuel
                 ?: (totalDistKm * 0.092)

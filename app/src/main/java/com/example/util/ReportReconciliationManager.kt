@@ -162,17 +162,20 @@ object ReportReconciliationManager {
             totalDistanceMeters = totalDistanceMeters,
             totalMovingDurationMs = totalMovingDurationMs
         )
-        if (weightedAverageSpeedKnots <= 0.0) {
-            val nonZeroDailyAvg = dailySummaries.mapNotNull { it.averageSpeedKnots.takeIf { s -> s > 0.0 } }
+        if (weightedAverageSpeedKnots <= 0.0 || weightedAverageSpeedKnots > 86.4) {
+            val nonZeroDailyAvg = dailySummaries.mapNotNull { it.averageSpeedKnots.takeIf { s -> s in 0.1..86.4 } }
             if (nonZeroDailyAvg.isNotEmpty()) {
                 weightedAverageSpeedKnots = nonZeroDailyAvg.average()
-            } else if (totalDistanceMeters > 0.0 && totalEngineHoursMs > 0) {
-                val speedKmh = (totalDistanceMeters / 1000.0) / (totalEngineHoursMs / 3600000.0)
+            } else if (totalDistanceMeters > 0.0 && totalEngineHoursMs > 60000L) {
+                val speedKmh = ((totalDistanceMeters / 1000.0) / (totalEngineHoursMs / 3600000.0)).coerceIn(0.0, 160.0)
                 weightedAverageSpeedKnots = speedKmh / TelemetrySanitizerService.KNOTS_TO_KMH
             } else if (totalDistanceMeters > 0.0) {
                 weightedAverageSpeedKnots = 19.5 // ~36 km/h standard fallback
+            } else {
+                weightedAverageSpeedKnots = 0.0
             }
         }
+        weightedAverageSpeedKnots = weightedAverageSpeedKnots.coerceIn(0.0, 86.4)
 
         return PeriodReport(
             periodType = periodType,
@@ -186,7 +189,7 @@ object ReportReconciliationManager {
             totalMovingDurationMs = totalMovingDurationMs,
             totalIdleDurationMs = totalIdleDurationMs,
             totalStopDurationMs = totalStopDurationMs,
-            maxSpeedKnots = maxSpeedKnots,
+            maxSpeedKnots = maxSpeedKnots.coerceIn(0.0, 97.2),
             weightedAverageSpeedKnots = weightedAverageSpeedKnots,
             totalFuelLiters = totalFuelLiters,
             totalEngineHoursMs = totalEngineHoursMs
@@ -197,11 +200,13 @@ object ReportReconciliationManager {
         totalDistanceMeters: Double,
         totalMovingDurationMs: Long
     ): Double {
-        if (totalMovingDurationMs <= 0 || totalDistanceMeters <= 0.0) return 0.0
+        if (totalMovingDurationMs < 60000L || totalDistanceMeters <= 0.0) return 0.0
         val movingDurationHours = totalMovingDurationMs / 3600000.0
         val distanceKm = totalDistanceMeters / 1000.0
         val avgSpeedKmh = distanceKm / movingDurationHours
-        return avgSpeedKmh / TelemetrySanitizerService.KNOTS_TO_KMH
+        if (avgSpeedKmh.isNaN() || avgSpeedKmh.isInfinite() || avgSpeedKmh <= 0.0) return 0.0
+        val clampedKmh = avgSpeedKmh.coerceIn(0.0, 160.0)
+        return clampedKmh / TelemetrySanitizerService.KNOTS_TO_KMH
     }
 
     // ==========================================

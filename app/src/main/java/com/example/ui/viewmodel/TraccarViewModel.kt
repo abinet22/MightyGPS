@@ -1191,11 +1191,11 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 val dayCal = Calendar.getInstance().apply {
                     add(Calendar.DAY_OF_YEAR, -((summaries.size - 1) - idx))
                 }
-                val avgKnots = s.averageSpeed.takeIf { it > 0.0 } ?: (18.0 + (s.deviceId % 4) * 3.0)
-                val maxKnots = s.maxSpeed.takeIf { it > 0.0 } ?: (avgKnots + 20.0)
-                val movingDurationMs = if (avgKnots > 0.0 && s.distance > 0.0) {
-                    ((s.distance / 1000.0) / (avgKnots * 1.852) * 3600000).toLong()
-                } else 0L
+                val avgKnots = if (s.averageSpeed in 0.1..80.0) s.averageSpeed else if (s.distance > 0) 20.0 else 0.0
+                val maxKnots = if (s.maxSpeed in 0.1..95.0) s.maxSpeed else if (avgKnots > 0) minOf(avgKnots + 15.0, 85.0) else 0.0
+                val distKm = s.distance / 1000.0
+                val speedKmh = (avgKnots * 1.852).coerceIn(15.0, 140.0)
+                val movingDurationMs = if (distKm > 0.0) ((distKm / speedKmh) * 3600000L).toLong() else 0L
                 val idleMs = if (totalIdleFromStopsMs > 0 && summaries.isNotEmpty()) {
                     totalIdleFromStopsMs / summaries.size
                 } else {
@@ -1229,17 +1229,20 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                 val sum = raw.sum()
                 raw.map { it / sum }
             }
+            val baseAvgKnots = if (s.averageSpeed in 0.1..80.0) s.averageSpeed else if (s.distance > 0) 20.0 else 0.0
+            val baseMaxKnots = if (s.maxSpeed in 0.1..95.0) s.maxSpeed else if (baseAvgKnots > 0) minOf(baseAvgKnots + 15.0, 85.0) else 0.0
+
             weights.mapIndexed { dayIdx, weight ->
                 val dayCal = Calendar.getInstance().apply {
                     add(Calendar.DAY_OF_YEAR, -(numDays - 1 - dayIdx))
                 }
                 val dist = s.distance * weight
-                val avgKnots = s.averageSpeed.takeIf { it > 0.0 } ?: (18.0 + ((s.deviceId + dayIdx) % 4) * 3.0)
-                val maxKnots = s.maxSpeed.takeIf { it > 0.0 } ?: (avgKnots + 20.0 + (dayIdx % 3) * 4.0)
-                val movingMs = if (avgKnots > 0.0 && dist > 0.0) {
-                    ((dist / 1000.0) / (avgKnots * 1.852) * 3600000).toLong()
-                } else 0L
-                val idleMs = ((totalIdleFromStopsMs.takeIf { it > 0 } ?: maxOf(0L, s.engineHours - ((s.distance / 1000.0) / (maxOf(10.0, avgKnots) * 1.852) * 3600000).toLong())) * weight).toLong()
+                val distKm = dist / 1000.0
+                val dayAvgKnots = if (distKm > 0.0) baseAvgKnots else 0.0
+                val dayMaxKnots = if (distKm > 0.0) baseMaxKnots else 0.0
+                val speedKmh = (dayAvgKnots * 1.852).coerceIn(15.0, 140.0)
+                val movingMs = if (distKm > 0.0) ((distKm / speedKmh) * 3600000L).toLong() else 0L
+                val idleMs = ((totalIdleFromStopsMs.takeIf { it > 0 } ?: maxOf(0L, s.engineHours - ((s.distance / 1000.0) / (maxOf(10.0, baseAvgKnots) * 1.852) * 3600000).toLong())) * weight).toLong()
                 val stopMs = (totalStopDurationMs * weight).toLong()
 
                 com.example.data.model.DailySummary(
@@ -1250,19 +1253,19 @@ class TraccarViewModel(application: Application) : AndroidViewModel(application)
                     movingDurationMs = movingMs,
                     idleDurationMs = idleMs,
                     stopDurationMs = stopMs,
-                    maxSpeedKnots = maxKnots,
-                    averageSpeedKnots = avgKnots,
+                    maxSpeedKnots = dayMaxKnots,
+                    averageSpeedKnots = dayAvgKnots,
                     spentFuelLiters = s.spentFuel * weight,
                     engineHoursMs = (s.engineHours * weight).toLong()
                 )
             }
         } else {
             summaries.mapIndexed { _, s ->
-                val avgKnots = s.averageSpeed.takeIf { it > 0.0 } ?: (18.0 + (s.deviceId % 4) * 3.0)
-                val maxKnots = s.maxSpeed.takeIf { it > 0.0 } ?: (avgKnots + 20.0)
-                val movingDurationMs = if (avgKnots > 0.0 && s.distance > 0.0) {
-                    ((s.distance / 1000.0) / (avgKnots * 1.852) * 3600000).toLong()
-                } else 0L
+                val avgKnots = if (s.averageSpeed in 0.1..80.0) s.averageSpeed else if (s.distance > 0) 20.0 else 0.0
+                val maxKnots = if (s.maxSpeed in 0.1..95.0) s.maxSpeed else if (avgKnots > 0) minOf(avgKnots + 15.0, 85.0) else 0.0
+                val distKm = s.distance / 1000.0
+                val speedKmh = (avgKnots * 1.852).coerceIn(15.0, 140.0)
+                val movingDurationMs = if (distKm > 0.0) ((distKm / speedKmh) * 3600000L).toLong() else 0L
                 val idleMs = if (totalIdleFromStopsMs > 0 && summaries.isNotEmpty()) {
                     totalIdleFromStopsMs / summaries.size
                 } else {
